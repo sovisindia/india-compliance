@@ -36,7 +36,7 @@ class GSTQuickEntryForm extends frappe.ui.form.QuickEntryForm {
                 fieldname: "is_primary_address",
                 label: "Preferred Billing Address",
                 fieldtype: "Check",
-                default: 0,
+                default: 1,
             },
             {
                 // set as _pincode so that frappe.ui.form.Layout doesn't override it
@@ -59,7 +59,7 @@ class GSTQuickEntryForm extends frappe.ui.form.QuickEntryForm {
                 fieldname: "is_shipping_address",
                 label: "Preferred Shipping Address",
                 fieldtype: "Check",
-                default: 0,
+                default: 1,
             },
             {
                 fieldname: "city",
