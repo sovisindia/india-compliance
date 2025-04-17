@@ -18,7 +18,9 @@ GST_TAX_TYPES = tuple(field[:-8] for field in GST_ACCOUNT_FIELDS)
 
 GST_RCM_TAX_TYPES = tuple(tax_type + "_rcm" for tax_type in GST_TAX_TYPES)
 
-TAX_TYPES = (*GST_TAX_TYPES, *GST_RCM_TAX_TYPES)
+GST_REFUND_TAX_TYPES = tuple(tax_type + "_refund" for tax_type in GST_TAX_TYPES)
+
+TAX_TYPES = (*GST_TAX_TYPES, *GST_RCM_TAX_TYPES, *GST_REFUND_TAX_TYPES)
 
 GST_PARTY_TYPES = ("Customer", "Supplier", "Company")
 
@@ -34,6 +36,23 @@ GST_CATEGORIES = {
     "Tax Deductor": "B2B",
     "Tax Collector": "B2B",
     "Input Service Distributor": "B2B",
+}
+
+GST_CATEGORY_MAP = {
+    "R": "Regular",
+    "SEZWP": "SEZ supplies with payment of tax",
+    "SEZWOP": "SEZ supplies with out payment of tax",
+    "DE": "Deemed exports",
+    "CBW": "Intra-State Supplies attracting IGST",
+}
+
+ACTION_MAP = {"A": "Accepted", "R": "Rejected", "P": "Pending", "N": "No Action"}
+
+STATUS_CODE_MAP = {
+    "P": "Processed",
+    "PE": "Processed with Errors",
+    "ER": "Error",
+    "IP": "In Progress",
 }
 
 EXPORT_TYPES = (
@@ -146,7 +165,7 @@ STATE_PINCODE_MAPPING = {
     "Jammu and Kashmir": (180, 194),
     "Himachal Pradesh": (171, 177),
     "Punjab": (140, 160),
-    "Chandigarh": (160, 160),
+    "Chandigarh": ((140, 140), (160, 160)),
     "Uttarakhand": (244, 263),
     "Haryana": (121, 136),
     "Delhi": (110, 110),

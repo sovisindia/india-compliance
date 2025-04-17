@@ -1,6 +1,8 @@
 import frappe
 from frappe.utils import flt
-from erpnext.setup.setup_wizard.operations.taxes_setup import from_detailed_data
+from erpnext.setup.setup_wizard.operations.taxes_setup import (
+    from_detailed_data,
+)
 
 from india_compliance.gst_india.utils import get_data_file_path
 
@@ -238,6 +240,7 @@ def create_default_company_account(
         }
     )
     account.flags.ignore_permissions = True
+    account.flags.ignore_root_company_validation = True
     account.insert(ignore_if_duplicate=True)
 
     if default_fieldname and not frappe.db.get_value(

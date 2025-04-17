@@ -223,6 +223,12 @@ def get_columns(filters):
     columns.extend(
         [
             {
+                "label": _("Item Qty"),
+                "fieldname": "qty",
+                "fieldtype": "Data",
+                "width": 100,
+            },
+            {
                 "label": _("HSN Code"),
                 "fieldname": "gst_hsn_code",
                 "fieldtype": "Link",
@@ -231,7 +237,7 @@ def get_columns(filters):
             },
             {
                 "label": _("UOM"),
-                "fieldname": "stock_uom",
+                "fieldname": "uom",
                 "fieldtype": "Data",
                 "width": 100,
             },

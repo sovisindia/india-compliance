@@ -92,8 +92,7 @@ class TestPurchaseReconciliationTool(FrappeTestCase):
             }
         )
 
-        purchase_reconciliation_tool.save(ignore_permissions=True)
-        reconciled_data = purchase_reconciliation_tool.ReconciledData.get()
+        reconciled_data = purchase_reconciliation_tool.reconcile_and_generate_data()
 
         for row in reconciled_data:
             for key, value in row.items():
@@ -153,8 +152,19 @@ def create_gst_inward_supply(**kwargs):
     args.update(kwargs)
 
     gst_inward_supply = frappe.new_doc("GST Inward Supply")
-
     gst_inward_supply.update(args)
+
+    for field in ["taxable_value", "igst", "cgst", "sgst", "cess"]:
+        gst_inward_supply.set(
+            field,
+            sum(
+                [
+                    row.get(field)
+                    for row in gst_inward_supply.get("items")
+                    if row.get(field)
+                ]
+            ),
+        )
 
     return gst_inward_supply.insert()
 

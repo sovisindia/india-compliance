@@ -3,13 +3,16 @@ from datetime import datetime
 import frappe
 from frappe.utils import flt
 
-from india_compliance.gst_india.constants import STATE_NUMBERS, UOM_MAP
+from india_compliance.gst_india.constants import UOM_MAP
 from india_compliance.gst_india.report.gstr_1.gstr_1 import (
     GSTR1DocumentIssuedSummary,
     GSTR11A11BData,
 )
-from india_compliance.gst_india.utils import get_gst_accounts_by_type
-from india_compliance.gst_india.utils.__init__ import get_party_for_gstin
+from india_compliance.gst_india.utils import (
+    MONTHS,
+    get_gst_accounts_by_type,
+    get_party_for_gstin,
+)
 from india_compliance.gst_india.utils.gstr_1 import (
     CATEGORY_SUB_CATEGORY_MAPPING,
     SUB_CATEGORY_GOV_CATEGORY_MAPPING,
@@ -24,20 +27,20 @@ from india_compliance.gst_india.utils.gstr_1 import (
     GSTR1_SubCategory,
 )
 from india_compliance.gst_india.utils.gstr_1.gstr_1_data import GSTR1Invoices
+from india_compliance.gst_india.utils.gstr_mapper_utils import GovDataMapper
 
 ############################################################################################################
 ### Map Govt JSON to Internal Data Structure ###############################################################
 ############################################################################################################
 
 
-class GovDataMapper:
+class GSTR1DataMapper(GovDataMapper):
     """
     GST Developer API Documentation for Returns - https://developer.gst.gov.in/apiportal/taxpayer/returns
 
     GSTR-1 JSON format - https://developer.gst.gov.in/pages/apiportal/data/Returns/GSTR1%20-%20Save%20GSTR1%20data/v4.0/GSTR1%20-%20Save%20GSTR1%20data%20attributes.xlsx
     """
 
-    KEY_MAPPING = {}
     # default item amounts
     DEFAULT_ITEM_AMOUNTS = {
         GSTR1_ItemField.TAXABLE_VALUE.value: 0,
@@ -68,106 +71,10 @@ class GovDataMapper:
     }
 
     def __init__(self):
-        self.set_total_defaults()
-
-        self.value_formatters_for_internal = {}
-        self.value_formatters_for_gov = {}
+        super().__init__()
         self.gstin_party_map = {}
-        # value formatting constants
-
-        self.STATE_NUMBERS = self.reverse_dict(STATE_NUMBERS)
-
-    def format_data(
-        self, data: dict, default_data: dict = None, for_gov: bool = False
-    ) -> dict:
-        """
-        Objective: Convert Object from one format to another.
-            eg: Govt JSON to Internal Data Structure
-
-        Args:
-            data (dict): Data to be converted
-            default_data (dict, optional): Default Data to be added. Hardcoded values.
-            for_gov (bool, optional): If the data is to be converted to Govt JSON. Defaults to False.
-                else it will be converted to Internal Data Structure.
-
-        Steps:
-            1. Use key mapping to map the keys from one format to another.
-            2. Use value formatters to format the values of the keys.
-            3. Round values
-        """
-        output = {}
-
-        if default_data:
-            output.update(default_data)
-
-        key_mapping = self.KEY_MAPPING.copy()
-
-        if for_gov:
-            key_mapping = self.reverse_dict(key_mapping)
-
-        value_formatters = (
-            self.value_formatters_for_gov
-            if for_gov
-            else self.value_formatters_for_internal
-        )
-
-        for old_key, new_key in key_mapping.items():
-            invoice_data_value = data.get(old_key, "")
-
-            if not for_gov and old_key == "flag":
-                continue
-
-            if new_key in self.DISCARD_IF_ZERO_FIELDS and not invoice_data_value:
-                continue
-
-            if not (invoice_data_value or invoice_data_value == 0):
-                # continue if value is None or empty object
-                continue
-
-            value_formatter = value_formatters.get(old_key)
-
-            if callable(value_formatter):
-                output[new_key] = value_formatter(invoice_data_value, data)
-            else:
-                output[new_key] = invoice_data_value
-
-            if new_key in self.FLOAT_FIELDS:
-                output[new_key] = flt(output[new_key], 2)
-
-        return output
-
-    # common utils
-
-    def update_totals(self, invoice, items):
-        """
-        Update item totals to the invoice row
-        """
-        total_data = self.TOTAL_DEFAULTS.copy()
-
-        for item in items:
-            for field, value in item.items():
-                total_field = f"total_{field}"
-
-                if total_field not in total_data:
-                    continue
-
-                invoice[total_field] = invoice.setdefault(total_field, 0) + value
-
-    def set_total_defaults(self):
-        self.TOTAL_DEFAULTS = {
-            f"total_{key}": 0 for key in self.DEFAULT_ITEM_AMOUNTS.keys()
-        }
-
-    def reverse_dict(self, data):
-        return {v: k for k, v in data.items()}
 
     # common value formatters
-    def map_place_of_supply(self, pos, *args):
-        if pos.isnumeric():
-            return f"{pos}-{self.STATE_NUMBERS.get(pos)}"
-
-        return pos.split("-")[0]
-
     def format_item_for_internal(self, items, *args):
         return [
             {
@@ -201,7 +108,7 @@ class GovDataMapper:
         return datetime.strptime(date, "%Y-%m-%d").strftime("%d-%m-%Y")
 
 
-class B2B(GovDataMapper):
+class B2B(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -315,6 +222,12 @@ class B2B(GovDataMapper):
                 GSTR1_DataField.CUST_NAME.value: self.guess_customer_name(
                     customer_gstin
                 ),
+                GSTR1_DataField.ERROR_CD.value: customer_data.get(
+                    GovDataField.ERROR_CD.value
+                ),
+                GSTR1_DataField.ERROR_MSG.value: customer_data.get(
+                    GovDataField.ERROR_MSG.value
+                ),
             }
 
             for invoice in customer_data.get(GovDataField.INVOICES.value):
@@ -376,7 +289,7 @@ class B2B(GovDataMapper):
         return self.DOCUMENT_CATEGORIES.get(sub_category, sub_category)
 
 
-class B2CL(GovDataMapper):
+class B2CL(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -466,6 +379,12 @@ class B2CL(GovDataMapper):
             default_invoice_data = {
                 GSTR1_DataField.POS.value: pos,
                 GSTR1_DataField.DOC_TYPE.value: self.DOCUMENT_CATEGORY,
+                GSTR1_DataField.ERROR_CD.value: pos_data.get(
+                    GovDataField.ERROR_CD.value
+                ),
+                GSTR1_DataField.ERROR_MSG.value: pos_data.get(
+                    GovDataField.ERROR_MSG.value
+                ),
             }
 
             for invoice in pos_data.get(GovDataField.INVOICES.value):
@@ -502,7 +421,7 @@ class B2CL(GovDataMapper):
         return list(pos_data.values())
 
 
-class Exports(GovDataMapper):
+class Exports(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -600,6 +519,12 @@ class Exports(GovDataMapper):
 
             default_invoice_data = {
                 GSTR1_DataField.DOC_TYPE.value: document_type,
+                GSTR1_DataField.ERROR_CD.value: export_category.get(
+                    GovDataField.ERROR_CD.value
+                ),
+                GSTR1_DataField.ERROR_MSG.value: export_category.get(
+                    GovDataField.ERROR_MSG.value
+                ),
             }
 
             for invoice in export_category.get(GovDataField.INVOICES.value):
@@ -648,7 +573,7 @@ class Exports(GovDataMapper):
         return [self.format_data(item, for_gov=True) for item in items]
 
 
-class B2CS(GovDataMapper):
+class B2CS(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -694,6 +619,8 @@ class B2CS(GovDataMapper):
         GovDataField.CGST.value: GSTR1_DataField.CGST.value,
         GovDataField.SGST.value: GSTR1_DataField.SGST.value,
         GovDataField.CESS.value: GSTR1_DataField.CESS.value,
+        GovDataField.ERROR_CD.value: GSTR1_DataField.ERROR_CD.value,
+        GovDataField.ERROR_MSG.value: GSTR1_DataField.ERROR_MSG.value,
     }
 
     def __init__(self):
@@ -744,7 +671,7 @@ class B2CS(GovDataMapper):
         return data
 
 
-class NilRated(GovDataMapper):
+class NilRated(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -804,8 +731,15 @@ class NilRated(GovDataMapper):
     def convert_to_internal_data_format(self, input_data):
         output = {}
 
+        default_data = {
+            GSTR1_DataField.ERROR_CD.value: input_data.get(GovDataField.ERROR_CD.value),
+            GSTR1_DataField.ERROR_MSG.value: input_data.get(
+                GovDataField.ERROR_MSG.value
+            ),
+        }
+
         for invoice in input_data[GovDataField.INVOICES.value]:
-            invoice_data = self.format_data(invoice)
+            invoice_data = self.format_data(invoice, default_data)
 
             if not invoice_data:
                 continue
@@ -849,7 +783,7 @@ class NilRated(GovDataMapper):
         return self.DOCUMENT_CATEGORIES.get(doc_category, doc_category)
 
 
-class CDNR(GovDataMapper):
+class CDNR(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -968,6 +902,12 @@ class CDNR(GovDataMapper):
                         GSTR1_DataField.CUST_NAME.value: self.guess_customer_name(
                             customer_gstin
                         ),
+                        GSTR1_DataField.ERROR_CD.value: customer_data.get(
+                            GovDataField.ERROR_CD.value
+                        ),
+                        GSTR1_DataField.ERROR_MSG.value: customer_data.get(
+                            GovDataField.ERROR_MSG.value
+                        ),
                     },
                 )
                 self.update_totals(
@@ -1037,7 +977,7 @@ class CDNR(GovDataMapper):
         return value * -1 if data[GovDataField.NOTE_TYPE.value] == "C" else value
 
 
-class CDNUR(GovDataMapper):
+class CDNUR(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -1097,6 +1037,8 @@ class CDNUR(GovDataMapper):
         GovDataField.TAXABLE_VALUE.value: GSTR1_ItemField.TAXABLE_VALUE.value,
         GovDataField.IGST.value: GSTR1_ItemField.IGST.value,
         GovDataField.CESS.value: GSTR1_ItemField.CESS.value,
+        GovDataField.ERROR_CD.value: GSTR1_DataField.ERROR_CD.value,
+        GovDataField.ERROR_MSG.value: GSTR1_DataField.ERROR_MSG.value,
     }
     DOCUMENT_TYPES = {
         "C": "Credit Note",
@@ -1175,7 +1117,7 @@ class CDNUR(GovDataMapper):
         return value * -1 if data[GovDataField.NOTE_TYPE.value] == "C" else value
 
 
-class HSNSUM(GovDataMapper):
+class HSNSUM(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -1239,16 +1181,26 @@ class HSNSUM(GovDataMapper):
     def convert_to_internal_data_format(self, input_data):
         output = {}
 
-        for invoice in input_data[GovDataField.HSN_DATA.value]:
-            output[
-                " - ".join(
-                    (
-                        invoice.get(GovDataField.HSN_CODE.value, ""),
-                        self.map_uom(invoice.get(GovDataField.UOM.value, "")),
-                        str(flt(invoice.get(GovDataField.TAX_RATE.value))),
+        # error JSON is diff from normal JSON
+        if isinstance(input_data, dict):
+            input_data = [input_data]
+
+        for row in input_data:
+            default_data = {
+                GSTR1_DataField.ERROR_CD.value: row.get(GovDataField.ERROR_CD.value),
+                GSTR1_DataField.ERROR_MSG.value: row.get(GovDataField.ERROR_MSG.value),
+            }
+
+            for invoice in row[GovDataField.HSN_DATA.value]:
+                output[
+                    " - ".join(
+                        (
+                            invoice.get(GovDataField.HSN_CODE.value, ""),
+                            self.map_uom(invoice.get(GovDataField.UOM.value, "")),
+                            str(flt(invoice.get(GovDataField.TAX_RATE.value))),
+                        )
                     )
-                )
-            ] = self.format_data(invoice)
+                ] = self.format_data(invoice, default_data)
 
         return {self.SUBCATEGORY: output}
 
@@ -1284,10 +1236,14 @@ class HSNSUM(GovDataMapper):
         uom = uom.upper()
 
         if "-" in uom:
-            if data and data.get(GSTR1_DataField.HSN_CODE.value, "").startswith("99"):
+            if (
+                data
+                and (hsn_code := data.get(GSTR1_DataField.HSN_CODE.value) or "")
+                and hsn_code.startswith("99")
+            ):
                 return "NA"
-            else:
-                return uom.split("-")[0]
+
+            return uom.split("-")[0]
 
         if uom in UOM_MAP:
             return f"{uom}-{UOM_MAP[uom]}"
@@ -1295,7 +1251,7 @@ class HSNSUM(GovDataMapper):
         return f"OTH-{UOM_MAP.get('OTH')}"
 
 
-class AT(GovDataMapper):
+class AT(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -1345,6 +1301,8 @@ class AT(GovDataMapper):
         GovDataField.CGST.value: GSTR1_DataField.CGST.value,
         GovDataField.SGST.value: GSTR1_DataField.SGST.value,
         GovDataField.CESS.value: GSTR1_DataField.CESS.value,
+        GovDataField.ERROR_CD.value: GSTR1_DataField.ERROR_CD.value,
+        GovDataField.ERROR_MSG.value: GSTR1_DataField.ERROR_MSG.value,
     }
     DEFAULT_ITEM_AMOUNTS = {
         GSTR1_DataField.IGST.value: 0,
@@ -1476,7 +1434,7 @@ class TXPD(AT):
     MULTIPLIER = -1
 
 
-class DOC_ISSUE(GovDataMapper):
+class DOC_ISSUE(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -1567,6 +1525,11 @@ class DOC_ISSUE(GovDataMapper):
         doc_nature_wise_data = {}
 
         for invoice in input_data:
+            if invoice[GSTR1_DataField.DOC_TYPE.value].startswith(
+                "Excluded from Report"
+            ):
+                continue
+
             doc_nature_wise_data.setdefault(
                 invoice[GSTR1_DataField.DOC_TYPE.value], []
             ).append(invoice)
@@ -1612,7 +1575,7 @@ class DOC_ISSUE(GovDataMapper):
         return self.DOCUMENT_NATURE.get(doc_nature, doc_nature)
 
 
-class SUPECOM(GovDataMapper):
+class SUPECOM(GSTR1DataMapper):
     """
     GST API Version - v4.0
 
@@ -1689,7 +1652,7 @@ class SUPECOM(GovDataMapper):
         return output
 
 
-class RETSUM(GovDataMapper):
+class RETSUM(GSTR1DataMapper):
     """
     Convert GSTR-1 Summary as returned by the API to the internal format
 
@@ -1859,7 +1822,7 @@ CLASS_MAP = {
 }
 
 
-def convert_to_internal_data_format(gov_data):
+def convert_to_internal_data_format(gov_data, for_errors=False):
     """
     Converts Gov data format to internal data format for all categories
     """
@@ -1873,7 +1836,16 @@ def convert_to_internal_data_format(gov_data):
             mapper_class().convert_to_internal_data_format(gov_data.get(category))
         )
 
-    return output
+    if not for_errors:
+        return output
+
+    errors = []
+    for category, data in output.items():
+        for row in data.values():
+            row["category"] = category
+            errors.append(row)
+
+    return errors
 
 
 def get_category_wise_data(
@@ -2058,6 +2030,9 @@ class BooksDataMapper:
                 GSTR1_DataField.SGST.value: 0,
                 GSTR1_DataField.CESS.value: 0,
                 GSTR1_DataField.DIFF_PERCENTAGE.value: 0,
+                GSTR1_DataField.SHIPPING_PORT_CODE.value: invoice.shipping_port_code,
+                GSTR1_DataField.SHIPPING_BILL_NUMBER.value: invoice.shipping_bill_number,
+                GSTR1_DataField.SHIPPING_BILL_DATE.value: invoice.shipping_bill_date,
                 "items": [],
             },
         )
@@ -2156,7 +2131,7 @@ class BooksDataMapper:
         )
 
     def process_data_for_hsn_summary(self, invoice, prepared_data):
-        key = f"{invoice.gst_hsn_code} - {invoice.stock_uom} - {flt(invoice.gst_rate)}"
+        key = f"{invoice.gst_hsn_code} - {invoice.uom} - {flt(invoice.gst_rate)}"
 
         if key not in prepared_data:
             mapped_dict = prepared_data.setdefault(
@@ -2166,7 +2141,7 @@ class BooksDataMapper:
                     GSTR1_DataField.DESCRIPTION.value: frappe.db.get_value(
                         "GST HSN Code", invoice.gst_hsn_code, "description"
                     ),
-                    GSTR1_DataField.UOM.value: invoice.stock_uom,
+                    GSTR1_DataField.UOM.value: invoice.uom,
                     GSTR1_DataField.QUANTITY.value: 0,
                     GSTR1_DataField.TAX_RATE.value: invoice.gst_rate,
                     GSTR1_DataField.TAXABLE_VALUE.value: 0,
@@ -2267,10 +2242,51 @@ class BooksDataMapper:
             GSTR1_DataField.CESS.value: invoice.total_cess_amount,
         }
 
+    def round_values(self, data):
+        """
+        Progressively round off the values in the data
+        to ensure that the total values match the sum of the individual values
+        """
+
+        if isinstance(data[0], list):
+            for row in data:
+                self.round_values(row)
+
+        fields = (
+            GSTR1_DataField.TAXABLE_VALUE.value,
+            GSTR1_DataField.IGST.value,
+            GSTR1_DataField.CGST.value,
+            GSTR1_DataField.SGST.value,
+            GSTR1_DataField.CESS.value,
+        )
+
+        for field in fields:
+            if field not in data[0]:
+                continue
+
+            differece = 0
+            last_row_with_value = None
+
+            for row in data:
+                if not row[field]:  # zero values
+                    continue
+
+                rounded = flt(row[field], 2)
+                differece += row[field] - rounded
+
+                row[field] = flt(rounded, 2)
+
+                last_row_with_value = row
+
+            if flt(differece, 2) != 0:
+                last_row_with_value[field] += differece
+
 
 class GSTR1BooksData(BooksDataMapper):
     def __init__(self, filters):
         self.filters = filters
+        if filters.get("month_or_quarter"):
+            self.current_month = MONTHS.index(filters.month_or_quarter) + 1
 
     def prepare_mapped_data(self):
         prepared_data = {}
@@ -2306,6 +2322,14 @@ class GSTR1BooksData(BooksDataMapper):
         for category, data in other_categories.items():
             if data:
                 prepared_data[category] = data
+
+        for data in prepared_data.values():
+            if not isinstance(data, dict):
+                continue
+
+            self.round_values(list(data.values()))
+
+        self.process_for_quarterly(prepared_data)
 
         return prepared_data
 
@@ -2368,3 +2392,103 @@ class GSTR1BooksData(BooksDataMapper):
             )
 
         return advances_data
+
+    def process_for_quarterly(self, data):
+        if self.filters.filing_preference != "Quarterly":
+            return
+
+        is_m3 = self.current_month % 3 == 0
+        m1_m2_subcategories = (
+            GSTR1_SubCategory.B2B_REGULAR.value,
+            GSTR1_SubCategory.B2B_REVERSE_CHARGE.value,
+            GSTR1_SubCategory.SEZWP.value,
+            GSTR1_SubCategory.SEZWOP.value,
+            GSTR1_SubCategory.DE.value,
+            GSTR1_SubCategory.CDNR.value,
+        )
+
+        if is_m3:
+            self.process_included_docs_for_quarterly(data, m1_m2_subcategories)
+        else:
+            self.process_excluded_docs_for_quarterly(data, m1_m2_subcategories)
+
+    def process_included_docs_for_quarterly(self, data, m1_m2_subcategories):
+        included_docs = self.get_already_filed_docs(m1_m2_subcategories)
+
+        for category in data:
+            if category not in m1_m2_subcategories:
+                continue
+
+            included = data.setdefault("already_included_docs_for_quarterly", [])
+
+            for key, row in data[category].copy().items():
+                if key in included_docs:
+                    continue
+
+                row["sub_category"] = category
+                included.append(row)
+                del data[category][key]
+
+    def process_excluded_docs_for_quarterly(self, data, m1_m2_subcategories):
+        for category in data.copy():
+            if category in m1_m2_subcategories:
+                continue
+
+            if category in (
+                GSTR1_SubCategory.HSN.value,
+                GSTR1_SubCategory.DOC_ISSUE.value,
+            ):
+                del data[category]
+                continue
+
+            excluded = data.setdefault("excluded_docs_for_quarterly", [])
+
+            for row in data[category].values():
+                if isinstance(row, dict):
+                    row["sub_category"] = category
+                    excluded.append(row)
+
+                elif isinstance(row, list):
+                    for item in row:
+                        item["sub_category"] = category
+
+                    excluded.extend(row)
+
+            del data[category]
+
+        return data
+
+    def get_already_filed_docs(self, m1_m2_subcategories):
+        from india_compliance.gst_india.doctype.gst_return_log.gst_return_log import (
+            get_gst_return_log,
+        )
+
+        company_gstin = self.filters.company_gstin
+        year = self.filters.year
+
+        log_names = [
+            f"GSTR1-{(self.current_month - 1):02d}{year}-{company_gstin}",
+            f"GSTR1-{(self.current_month - 2):02d}{year}-{company_gstin}",
+        ]
+
+        filed_invoices = set()
+
+        for log_name in log_names:
+            gstr1_log = get_gst_return_log(
+                log_name,
+                company=self.filters.company,
+                filing_preference=self.filters.filing_preference,
+            )
+
+            if not gstr1_log.filed:
+                gstr1_log.generate_gstr1_data(self.filters)
+
+            filed_data = gstr1_log.get_json_for("filed")
+
+            for category, invoices in filed_data.items():
+                if category not in m1_m2_subcategories:
+                    continue
+
+                filed_invoices.update(invoices.keys())
+
+        return filed_invoices

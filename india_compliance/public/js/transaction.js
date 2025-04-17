@@ -53,7 +53,7 @@ function fetch_gst_details(doctype) {
             "is_export_with_gst"
         );
     } else if (doctype === "Stock Entry") {
-        event_fields.push("bill_from_gstin", "bill_to_address");
+        event_fields.push("bill_from_address", "bill_to_address");
     } else if (["Subcontracting Order", "Subcontracting Receipt"].includes(doctype)) {
         event_fields.push("supplier_gstin");
     } else {
@@ -79,7 +79,13 @@ async function update_gst_details(frm, event) {
     const party_type = india_compliance.get_party_type(frm.doc.doctype).toLowerCase();
     const party_fieldname = frm.doc.doctype === "Quotation" ? "party_name" : party_type;
     const party = frm.doc[party_fieldname];
-    if (!party) return;
+
+    const same_gstin_stock_entry =
+        frm.doc.doctype === "Stock Entry" &&
+        ["Material Transfer", "Material Issue"].includes(frm.doc.purpose) &&
+        !frm.doc.is_return;
+
+    if (!(party || same_gstin_stock_entry)) return;
 
     if (
         [
@@ -136,7 +142,16 @@ async function update_gst_details(frm, event) {
             "is_export_with_gst"
         );
     } else if (frm.doc.doctype === "Stock Entry") {
-        fieldnames_to_set.push("bill_from_gstin", "bill_to_gstin", "bill_to_address");
+        fieldnames_to_set.push(
+            "bill_from_gstin",
+            "bill_to_gstin",
+            "bill_from_address",
+            "bill_to_address"
+        );
+
+        party_details["is_outward_stock_entry"] = same_gstin_stock_entry;
+        party_details["is_inward_stock_entry"] =
+            frm.doc.purpose === "Material Transfer" && frm.doc.is_return;
     } else {
         fieldnames_to_set.push("supplier_address", "supplier_gstin");
     }
@@ -217,7 +232,10 @@ function set_and_validate_gstin_status(doctype) {
         },
 
         gst_transporter_id(frm) {
-            india_compliance.validate_gst_transporter_id(frm.doc.gst_transporter_id);
+            india_compliance.validate_gst_transporter_id(
+                frm.doc.gst_transporter_id,
+                frm.doc
+            );
         },
 
         posting_date(frm) {
@@ -242,15 +260,10 @@ async function _set_and_validate_gstin_status(frm, gstin_field_name) {
 async function _set_gstin_status(frm, gstin_field_name) {
     const gstin_field = frm.get_field(gstin_field_name);
     const gstin = gstin_field.value;
-    const date_field =
-        frm.get_field("posting_date") || frm.get_field("transaction_date");
 
     let gstin_doc = frm._gstin_doc?.[gstin];
     if (!gstin_doc) {
-        gstin_doc = await india_compliance.set_gstin_status(
-            gstin_field,
-            date_field.value
-        );
+        gstin_doc = await india_compliance.set_gstin_status(gstin_field, frm.doc);
 
         frm._gstin_doc = frm._gstin_doc || {};
         frm._gstin_doc[gstin] = gstin_doc;
@@ -370,6 +383,7 @@ function _set_e_commerce_ecommerce_supply_type(frm) {
 
 function fetch_party_details(doctype) {
     let company_gstin_field = "company_gstin";
+    let is_inward_stock_entry = false;
 
     if (doctype === "Stock Entry") {
         company_gstin_field = "bill_from_gstin";
@@ -377,10 +391,20 @@ function fetch_party_details(doctype) {
 
     frappe.ui.form.on(doctype, {
         supplier(frm) {
+            if (
+                frm.doc.doctype === "Stock Entry" &&
+                frm.doc.purpose === "Material Transfer" &&
+                frm.doc.is_return
+            ) {
+                company_gstin_field = "bill_to_gstin";
+                is_inward_stock_entry = true;
+            }
+
             setTimeout(() => {
                 const party_details = {
                     [company_gstin_field]: frm.doc[company_gstin_field],
                     supplier: frm.doc.supplier,
+                    is_inward_stock_entry,
                 };
                 const args = {
                     party_details: JSON.stringify(party_details),

@@ -13,14 +13,22 @@ from india_compliance.gst_india.constants.custom_fields import (
     E_WAYBILL_FIELDS,
     SALES_REVERSE_CHARGE_FIELDS,
 )
+from india_compliance.gst_india.doctype.gst_return_log.gst_return_log import (
+    add_comment_to_gst_return_log,
+    update_is_not_latest_gstr1_data,
+)
 from india_compliance.gst_india.doctype.gstin.gstin import get_gstr_1_filed_upto
 from india_compliance.gst_india.page.india_compliance_account import (
     _disable_api_promo,
     post_login,
 )
-from india_compliance.gst_india.utils import can_enable_api, is_api_enabled
-from india_compliance.gst_india.utils.custom_fields import toggle_custom_fields
+from india_compliance.gst_india.utils import (
+    can_enable_api,
+    is_api_enabled,
+    is_production_api_enabled,
+)
 from india_compliance.gst_india.utils.gstin_info import get_gstin_info
+from india_compliance.utils.custom_fields import toggle_custom_fields
 
 E_INVOICE_START_DATE = "2021-01-01"
 
@@ -35,10 +43,14 @@ class GSTSettings(Document):
 
     def validate(self):
         self.update_dependant_fields()
-        self.validate_enable_api()
-        self.validate_gst_accounts()
-        self.validate_e_invoice_applicability_date()
-        self.validate_credentials()
+
+        if not frappe.flags.in_install:
+            self.validate_enable_api()
+            self.validate_gst_accounts()
+            self.validate_e_invoice_applicability_date()
+            self.validate_credentials()
+            self.validate_gstin_status_refresh_interval()
+
         self.clear_api_auth_session()
         self.update_retry_e_invoice_e_waybill_scheduled_job()
         self.update_e_invoice_status()
@@ -310,6 +322,21 @@ class GSTSettings(Document):
 
             company_list.append(row.company)
 
+    def validate_gstin_status_refresh_interval(self):
+        if not (
+            self.enable_api
+            and self.validate_gstin_status
+            and self.get("gstin_status_refresh_interval", 0) < 15
+        ):
+            return
+
+        self.gstin_status_refresh_interval = 15
+        frappe.msgprint(
+            _("GSTIN status refresh interval is set to 15"),
+            alert=True,
+            indicator="yellow",
+        )
+
     def is_sek_valid(self, gstin, throw=False, threshold=30):
         for credential in self.credentials:
             if credential.service == "Returns" and credential.gstin == gstin:
@@ -341,6 +368,32 @@ class GSTSettings(Document):
 
             if throw:
                 frappe.throw(message)
+
+            return False
+
+        return True
+
+    # GSTR 1 UTILITY
+    def is_gstr1_api_enabled(self, gstin, warn_for_missing_credentials=False):
+        if not is_production_api_enabled(self):
+            return False
+
+        if not self.enable_gstr_1_api:
+            return False
+
+        if not self.has_valid_credentials(gstin, "Returns"):
+            if warn_for_missing_credentials:
+                frappe.publish_realtime(
+                    "show_missing_gst_credentials_message",
+                    dict(
+                        message=_(
+                            "Credentials are missing for GSTIN {0} for service"
+                            " Returns in GST Settings"
+                        ).format(gstin),
+                        title=_("Missing Credentials"),
+                    ),
+                    user=frappe.session.user,
+                )
 
             return False
 
@@ -386,7 +439,9 @@ def update_gst_category():
         gstin = address.gstin
 
         if gstin not in gstin_info_map:
-            gstin_info_map[gstin] = get_gstin_info(gstin)
+            gstin_info_map[gstin] = get_gstin_info(
+                gstin, doc=frappe._dict(docname="Address", name=address.name)
+            )
 
         gst_category = gstin_info_map[gstin].gst_category
 
@@ -496,12 +551,12 @@ def update_not_applicable_status(e_invoice_applicability_date=None, company=None
     query.run()
 
 
-def restrict_gstr_1_transaction_for(posting_date, company_gstin, gst_settings=None):
+def restrict_gstr_1_transaction_for(doc, gst_settings=None, action="submit"):
     """
     Check if the user is allowed to modify transactions before the GSTR-1 filing date
     Additionally, update the `is_not_latest_gstr1_data` field in the GST Return Log
     """
-    posting_date = getdate(posting_date)
+    posting_date = getdate(doc.posting_date)
 
     if not gst_settings:
         gst_settings = frappe.get_cached_doc("GST Settings")
@@ -511,7 +566,7 @@ def restrict_gstr_1_transaction_for(posting_date, company_gstin, gst_settings=No
     if not gst_settings.restrict_changes_after_gstr_1:
         restrict = False
 
-    gstr_1_filed_upto = get_gstr_1_filed_upto(company_gstin)
+    gstr_1_filed_upto = get_gstr_1_filed_upto(doc.company_gstin)
 
     if not gstr_1_filed_upto:
         restrict = False
@@ -528,20 +583,8 @@ def restrict_gstr_1_transaction_for(posting_date, company_gstin, gst_settings=No
     if restrict:
         return gstr_1_filed_upto
 
-    update_is_not_latest_gstr1_data(posting_date, company_gstin)
+    # postprocess
+    update_is_not_latest_gstr1_data(posting_date, doc.company_gstin)
 
-    return None
-
-
-def update_is_not_latest_gstr1_data(posting_date, company_gstin):
-    period = posting_date.strftime("%m%Y")
-
-    frappe.db.set_value(
-        "GST Return Log", f"GSTR1-{period}-{company_gstin}", "is_latest_data", 0
-    )
-
-    frappe.publish_realtime(
-        "is_not_latest_data",
-        message={"filters": {"company_gstin": company_gstin, "period": period}},
-        doctype="GSTR-1 Beta",
-    )
+    if posting_date <= getdate(gstr_1_filed_upto):
+        add_comment_to_gst_return_log(doc, action)

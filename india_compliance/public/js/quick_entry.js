@@ -4,6 +4,10 @@ class GSTQuickEntryForm extends frappe.ui.form.QuickEntryForm {
         this.skip_redirect_on_error = true;
         this.api_enabled =
             india_compliance.is_api_enabled() && gst_settings.autofill_party_info;
+        this.gstin_to_party_type_map = {
+            F: "Partnership",
+            C: "Company",
+        };
     }
 
     async setup() {
@@ -92,6 +96,14 @@ class GSTQuickEntryForm extends frappe.ui.form.QuickEntryForm {
                 ignore_validation: true,
                 onchange: () => {
                     const d = this.dialog;
+
+                    if (["Customer", "Supplier"].includes(this.doctype)) {
+                        d.set_value(
+                            `${this.doctype.toLowerCase()}_type`,
+                            this.gstin_to_party_type_map[d.doc._gstin[5]] || "Individual"
+                        );
+                    }
+
                     if (this.api_enabled && !gst_settings.sandbox_mode)
                         return autofill_fields(d);
 
@@ -308,6 +320,7 @@ class AddressQuickEntryForm extends GSTQuickEntryForm {
                 "Customer",
                 "Supplier",
                 "Company",
+                "Lead"
             ].includes(doc.doctype)
         )
             return;
@@ -366,7 +379,7 @@ async function autofill_fields(dialog) {
         return;
     }
 
-    const gstin_info = await get_gstin_info(gstin);
+    const gstin_info = await get_gstin_info(gstin, dialog.doc.doctype);
     set_gstin_description(gstin_field, gstin_info.status);
     map_gstin_info(dialog.doc, gstin_info);
     dialog.refresh();
@@ -403,11 +416,11 @@ function setup_pincode_field(dialog, gstin_info) {
     };
 }
 
-function get_gstin_info(gstin, throw_error = true) {
+function get_gstin_info(gstin, doctype, throw_error = true) {
     return frappe
         .call({
             method: "india_compliance.gst_india.utils.gstin_info.get_gstin_info",
-            args: { gstin, throw_error },
+            args: { gstin, throw_error, doc: { doctype: doctype } },
         })
         .then(r => r.message);
 }

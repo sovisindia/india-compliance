@@ -6,6 +6,7 @@ import {
     TDS_REGEX,
     TCS_REGEX,
     GST_INVOICE_NUMBER_FORMAT,
+    PAN_REGEX,
 } from "./regex_constants";
 
 frappe.provide("india_compliance");
@@ -39,12 +40,32 @@ Object.assign(india_compliance, {
          * @returns {Array} - [month_or_quarter, year]
          */
 
-        const { filing_frequency } = gst_settings;
         const month_number = period.slice(0, 2);
         const year = period.slice(2);
 
-        if (filing_frequency === "Monthly") return [this.MONTH[month_number - 1], year];
-        else return [this.QUARTER[Math.floor(month_number / 3)], year];
+        return [this.MONTH[month_number - 1], year];
+    },
+
+    get_period(month_or_quarter, year) {
+        /**
+         * Returns the period in the format MMYYYY
+         * as accepted by the GST Portal
+         */
+
+        let month;
+
+        if (month_or_quarter.includes("-")) {
+            // Quarterly
+            const last_month = month_or_quarter.split("-")[1];
+            const date = new Date(`${last_month} 1, ${year}`);
+            month = String(date.getMonth() + 1).padStart(2, "0");
+        } else {
+            // Monthly
+            const date = new Date(`${month_or_quarter} 1, ${year}`);
+            month = String(date.getMonth() + 1).padStart(2, "0");
+        }
+
+        return `${month}${year}`;
     },
 
     get_gstin_query(party, party_type = "Company") {
@@ -87,16 +108,18 @@ Object.assign(india_compliance, {
         return in_list(frappe.boot.sales_doctypes, doctype) ? "Customer" : "Supplier";
     },
 
-    async set_gstin_status(field, transaction_date, force_update) {
+    async set_gstin_status(field, doc, force_update) {
         const gstin = field.value;
         if (!gstin || gstin.length !== 15) return field.set_description("");
 
-        const { message } = await frappe.call({
+        doc = get_doc_details(doc);
+
+        let { message } = await frappe.call({
             method: "india_compliance.gst_india.doctype.gstin.gstin.get_gstin_status",
-            args: { gstin, transaction_date, force_update },
+            args: { gstin, doc, force_update },
         });
 
-        if (!message) return field.set_description("");
+        if (!message) message = { status: "Not Available" };
 
         field.set_description(
             india_compliance.get_gstin_status_desc(
@@ -105,7 +128,7 @@ Object.assign(india_compliance, {
             )
         );
 
-        this.set_gstin_refresh_btn(field, transaction_date);
+        this.set_gstin_refresh_btn(field, doc);
 
         return message;
     },
@@ -151,12 +174,14 @@ Object.assign(india_compliance, {
         return field.set_description(pan_desc);
     },
 
-    validate_gst_transporter_id(transporter_id) {
+    validate_gst_transporter_id(transporter_id, doc) {
         if (!transporter_id || transporter_id.length !== 15) return;
+
+        doc = get_doc_details(doc);
 
         frappe.call({
             method: "india_compliance.gst_india.doctype.gstin.gstin.validate_gst_transporter_id",
-            args: { transporter_id },
+            args: { transporter_id, doc },
         });
     },
 
@@ -165,7 +190,11 @@ Object.assign(india_compliance, {
         const user_date = frappe.datetime.str_to_user(datetime);
         const pretty_date = frappe.datetime.prettyDate(datetime);
 
-        const STATUS_COLORS = { Active: "green", Cancelled: "red" };
+        const STATUS_COLORS = {
+            Active: "green",
+            Cancelled: "red",
+            "Not Available": "grey",
+        };
         return `<div class="d-flex indicator ${STATUS_COLORS[status] || "orange"}">
                     Status:&nbsp;<strong>${status}</strong>
                     <span class="text-right ml-auto gstin-last-updated">
@@ -176,7 +205,7 @@ Object.assign(india_compliance, {
                 </div>`;
     },
 
-    set_gstin_refresh_btn(field, transaction_date) {
+    set_gstin_refresh_btn(field, doc) {
         if (
             !this.is_api_enabled() ||
             gst_settings.sandbox_mode ||
@@ -192,12 +221,7 @@ Object.assign(india_compliance, {
         `).appendTo(field.$wrapper.find(".gstin-last-updated"));
 
         refresh_btn.on("click", async function () {
-            const force_update = true;
-            await india_compliance.set_gstin_status(
-                field,
-                transaction_date,
-                force_update
-            );
+            await india_compliance.set_gstin_status(field, doc, true);
         });
     },
 
@@ -225,9 +249,25 @@ Object.assign(india_compliance, {
         return india_compliance.is_api_enabled() && gst_settings.enable_e_invoice;
     },
 
-    validate_gstin(gstin) {
+    validate_pan(pan) {
+        if (!pan) return;
+
+        pan = pan.trim().toUpperCase();
+
+        if (pan.length != 10) {
+            frappe.throw(__("PAN should be 10 characters long"));
+        }
+
+        if (!PAN_REGEX.test(pan)) {
+            frappe.throw(__("Invalid PAN format"));
+        }
+
+        return pan;
+    },
+
+    validate_gstin(gstin, show_msg = true) {
         if (!gstin || gstin.length !== 15) {
-            frappe.msgprint(__("GSTIN must be 15 characters long"));
+            if (show_msg) frappe.msgprint(__("GSTIN must be 15 characters long"));
             return;
         }
 
@@ -236,7 +276,7 @@ Object.assign(india_compliance, {
         if (GSTIN_REGEX.test(gstin) && is_gstin_check_digit_valid(gstin)) {
             return gstin;
         } else {
-            frappe.msgprint(__("Invalid GSTIN"));
+            if (show_msg) frappe.msgprint(__("Invalid GSTIN"));
         }
     },
 
@@ -288,12 +328,14 @@ Object.assign(india_compliance, {
         // returns a list of error messages if invoice number is invalid
         let message_list = [];
         if (invoice_number.length > 16) {
-            message_list.push("GST Invoice Number cannot exceed 16 characters");
+            message_list.push(
+                "Transaction Name must be 16 characters or fewer to meet GST requirements"
+            );
         }
 
         if (!GST_INVOICE_NUMBER_FORMAT.test(invoice_number)) {
             message_list.push(
-                "GST Invoice Number should start with an alphanumeric character and can only contain alphanumeric characters, dash (-) and slash (/)."
+                "Transaction Name should start with an alphanumeric character and can only contain alphanumeric characters, dash (-) and slash (/) to meet GST requirements."
             );
         }
 
@@ -337,6 +379,12 @@ Object.assign(india_compliance, {
         });
     },
 
+    last_month_name() {
+        const today = frappe.datetime.now_date(true);
+        const last_month = today.getMonth() - 1;
+        return this.MONTH[last_month];
+    },
+
     last_month_start() {
         return frappe.datetime.add_months(frappe.datetime.month_start(), -1);
     },
@@ -354,17 +402,35 @@ Object.assign(india_compliance, {
             return position === "start"
                 ? `${current_year - 1}-03-01`
                 : `${current_year - 1}-09-30`;
-
         } else if (current_month <= 9) {
             return position === "start"
                 ? `${current_year - 1}-10-01`
                 : `${current_year}-03-31`;
-
         } else {
             return position === "start"
                 ? `${current_year}-04-01`
                 : `${current_year}-09-30`;
         }
+    },
+
+    get_options_for_year(filing_frequency) {
+        const today = new Date();
+        let current_year = today.getFullYear();
+        const current_month_idx = today.getMonth();
+        const start_year = 2017;
+        const year_range = current_year - start_year + 1;
+        const options = Array.from({ length: year_range }, (_, index) =>
+            (start_year + year_range - index - 1).toString()
+        );
+
+        if (
+            (filing_frequency === "Monthly" && current_month_idx === 0) ||
+            (filing_frequency === "Quarterly" && current_month_idx < 3)
+        )
+            current_year--;
+
+        current_year = current_year.toString();
+        return { options, current_year };
     },
 
     primary_to_danger_btn(parent) {
@@ -415,7 +481,42 @@ Object.assign(india_compliance, {
 
         return alert;
     },
+
+    is_e_waybill_applicable_for_subcontracting(doc) {
+        if (
+            !(
+                gst_settings.enable_api &&
+                gst_settings.enable_e_waybill &&
+                gst_settings.enable_e_waybill_for_sc
+            )
+        ) {
+            return false;
+        }
+
+        if (doc.doctype != "Stock Entry") return true;
+
+        if (
+            !["Material Transfer", "Material Issue", "Send to Subcontractor"].includes(
+                doc.purpose
+            )
+        ) {
+            return false;
+        }
+
+        return true;
+    },
 });
+
+function get_doc_details(doc) {
+    return doc
+        ? {
+              doctype: doc.doctype,
+              name: doc.name,
+              docstatus: doc.docstatus,
+              transaction_date: doc.posting_date || doc.transaction_date,
+          }
+        : null;
+}
 
 function is_gstin_check_digit_valid(gstin) {
     /*

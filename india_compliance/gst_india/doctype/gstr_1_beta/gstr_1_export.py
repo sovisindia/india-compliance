@@ -10,10 +10,11 @@ import frappe
 from frappe import _
 from frappe.utils import getdate
 
-from india_compliance.gst_india.doctype.gstr_1_beta.gstr_1_beta import get_period
+from india_compliance.gst_india.utils import get_period
 from india_compliance.gst_india.utils.exporter import ExcelExporter
 from india_compliance.gst_india.utils.gstr_1 import (
     JSON_CATEGORY_EXCEL_CATEGORY_MAPPING,
+    QUARTERLY_KEYS,
     GovExcelField,
     GovExcelSheetName,
     GovJsonKey,
@@ -77,7 +78,7 @@ class DataProcessor:
         Apply transformations to row fields
         """
         for field, modifier in self.FIELD_TRANSFORMATIONS.items():
-            if field in row:
+            if row.get(field):
                 row[field] = modifier(row[field])
 
         return row
@@ -202,7 +203,13 @@ class GovExcel(DataProcessor):
         """
         Add draft count to cancelled count for DOC_ISSUE category
         """
-        for doc in data:
+        for doc in data.copy():
+            if doc.get(GSTR1_DataField.DOC_TYPE.value).startswith(
+                "Excluded from Report"
+            ):
+                data.remove(doc)
+                continue
+
             doc[GSTR1_DataField.CANCELLED_COUNT.value] += doc.get(
                 GSTR1_DataField.DRAFT_COUNT.value, 0
             )
@@ -2037,7 +2044,7 @@ def download_reconcile_as_excel(company_gstin, month_or_quarter, year):
 
 
 @frappe.whitelist()
-def download_gstr_1_json(
+def get_gstr_1_json(
     company_gstin,
     year,
     month_or_quarter,
@@ -2062,6 +2069,8 @@ def download_gstr_1_json(
         if subcategory in {
             GSTR1_SubCategory.NIL_EXEMPT.value,
             GSTR1_SubCategory.HSN.value,
+            GSTR1_SubCategory.DOC_ISSUE.value,
+            *QUARTERLY_KEYS,
         }:
             continue
 

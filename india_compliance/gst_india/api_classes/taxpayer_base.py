@@ -15,7 +15,7 @@ from india_compliance.exceptions import (
     InvalidOTPError,
     OTPRequestedError,
 )
-from india_compliance.gst_india.api_classes.base import BaseAPI, get_public_ip
+from india_compliance.gst_india.api_classes.base import BaseAPI
 from india_compliance.gst_india.utils import merge_dicts, tar_gz_bytes_to_data
 from india_compliance.gst_india.utils.cryptography import (
     aes_decrypt_data,
@@ -115,6 +115,9 @@ class TaxpayerAuthenticate(BaseAPI):
         # "AUTH4034": "invalid_otp",  # Invalid OTP
         "AUTH4038": "authorization_failed",  # Session Expired
         "TEC4002": "invalid_public_key",
+        "RET13506": "OTP is either expired or incorrect",
+        "RET00003": "Return Form already ready to be filed",  # Actions performed on portal directly
+        "RET09001": "Latest Summary is not available. Please generate summary and try again.",  # Actions performed on portal directly
     }
 
     def request_otp(self):
@@ -186,6 +189,13 @@ class TaxpayerAuthenticate(BaseAPI):
                 "username": self.username,
                 "auth_token": auth_token,
             },
+            endpoint="authenticate",
+        )
+
+    def initiate_otp_for_evc(self, pan, form_type):
+        return self.get(
+            action="EVCOTP",
+            params={"pan": pan, "form_type": form_type},
             endpoint="authenticate",
         )
 
@@ -280,7 +290,8 @@ class TaxpayerAuthenticate(BaseAPI):
             {"auth_token": None},
         )
 
-        frappe.db.commit()  # nosemgrep - executed in after enqueue
+        if not frappe.flags.in_test:
+            frappe.db.commit()  # nosemgrep - executed in after enqueue
 
 
 class TaxpayerBaseAPI(TaxpayerAuthenticate):
@@ -302,7 +313,6 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
                 "gstin": self.company_gstin,
                 "state-cd": self.company_gstin[:2],
                 "username": self.username,
-                "ip-usr": frappe.cache.hget("public_ip", "public_ip", get_public_ip),
                 "txn": self.generate_request_id(length=32),
             }
         )
@@ -317,6 +327,7 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
         self,
         method,
         action=None,
+        return_type=None,
         return_period=None,
         params=None,
         endpoint=None,
@@ -331,6 +342,10 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
                 return response
 
         headers = {"auth-token": auth_token}
+        if return_type:
+            headers["rtn_typ"] = return_type
+            headers["userrole"] = return_type
+
         if return_period:
             headers["ret_period"] = return_period
 
@@ -351,7 +366,12 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
         return self._request("get", *args, **kwargs, params=params)
 
     def post(self, *args, **kwargs):
+        self.default_log_values.update(update_gstr_action=True)
         return self._request("post", *args, **kwargs)
+
+    def put(self, *args, **kwargs):
+        self.default_log_values.update(update_gstr_action=True)
+        return self._request("put", *args, **kwargs)
 
     def before_request(self, request_args):
         self.encrypt_request(request_args.get("json"))
@@ -381,6 +401,23 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
             response.result = frappe.parse_json(b64decode(decrypted_data).decode())
 
         return response
+
+    def encrypt_request(self, json):
+        if not json:
+            return
+
+        super().encrypt_request(json)
+
+        if json.get("data"):
+            b64_data = b64encode(frappe.as_json(json.get("data")).encode())
+            json["data"] = aes_encrypt_data(b64_data.decode(), self.session_key)
+
+            if json.get("st") == "EVC":
+                sid_key = json.get("sid").encode()
+                json["sign"] = hmac_sha256(b64_data, sid_key)
+
+            else:
+                json["hmac"] = hmac_sha256(b64_data, self.session_key)
 
     def handle_error_response(self, response):
         success_value = response.get("status_cd") != 0
@@ -430,13 +467,12 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
 
         return app_key
 
-    def get_files(self, return_period, token, action, endpoint, otp=None):
+    def get_files(self, return_period, token, action, endpoint):
         response = self.get(
             action=action,
             return_period=return_period,
             params={"ret_period": return_period, "token": token},
             endpoint=endpoint,
-            otp=otp,
         )
 
         if response.error_type == "queued":
@@ -455,7 +491,7 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
             return
 
         # Dummy request
-        self.get_filing_preference()
+        self.fetch_filing_preference(fy=self.get_fy())
 
         frappe.cache.set_value(
             f"authenticated_gstin:{self.company_gstin}",
@@ -465,10 +501,10 @@ class TaxpayerBaseAPI(TaxpayerAuthenticate):
 
         return
 
-    def get_filing_preference(self):
+    def fetch_filing_preference(self, fy):
         return self.get(
-            action="GETPREF", params={"fy": self.get_fy()}, endpoint="returns"
-        )
+            action="GETPREF", params={"fy": fy}, endpoint="returns"
+        ).response
 
     @staticmethod
     def get_fy():

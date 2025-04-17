@@ -8,7 +8,9 @@ from erpnext.accounts.utils import create_payment_ledger_entry
 from erpnext.controllers.accounts_controller import get_advance_payment_entries
 
 from india_compliance.gst_india.constants import TAX_TYPES
-from india_compliance.gst_india.overrides.transaction import get_gst_details
+from india_compliance.gst_india.overrides.transaction import (
+    get_gst_details,
+)
 from india_compliance.gst_india.overrides.transaction import (
     validate_backdated_transaction as _validate_backdated_transaction,
 )
@@ -83,8 +85,6 @@ def validate(doc, method=None):
         return
 
     if doc.party_type == "Customer":
-        validate_backdated_transaction(doc)
-
         # Presume is export with GST if GST accounts are present
         doc.is_export_with_gst = 1
         validate_transaction_for_advance_payment(doc, method)
@@ -98,6 +98,9 @@ def validate(doc, method=None):
 
 
 def on_submit(doc, method=None):
+    if doc.party_type == "Customer":
+        validate_backdated_transaction(doc)
+
     make_gst_revesal_entry_from_advance_payment(doc)
 
 
@@ -112,7 +115,7 @@ def before_cancel(doc, method=None):
     validate_backdated_transaction(doc, action="cancel")
 
 
-def validate_backdated_transaction(doc, action="create"):
+def validate_backdated_transaction(doc, action="submit"):
     for row in doc.taxes:
         if row.gst_tax_type in TAX_TYPES and row.tax_amount != 0:
             _validate_backdated_transaction(doc, action=action)
@@ -331,6 +334,7 @@ def get_advance_payment_entries_for_regional(
     party_account,
     order_doctype,
     order_list=None,
+    default_advance_account=None,
     include_unallocated=True,
     against_all_orders=False,
     limit=None,
@@ -346,6 +350,7 @@ def get_advance_payment_entries_for_regional(
         party_account=party_account,
         order_doctype=order_doctype,
         order_list=order_list,
+        default_advance_account=default_advance_account,
         include_unallocated=include_unallocated,
         against_all_orders=against_all_orders,
         limit=limit,
