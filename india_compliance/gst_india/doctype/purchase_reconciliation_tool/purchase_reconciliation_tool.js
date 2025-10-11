@@ -68,7 +68,10 @@ frappe.ui.form.on(DOCTYPE, {
         new india_compliance.quick_info_popover(frm, tooltip_info);
 
         await frappe.require("purchase_reconciliation_tool.bundle.js");
+
+        frm.doc.company = frappe.defaults.get_user_default("Company");
         frm.trigger("company");
+
         frm.reconciliation_tabs = new PurchaseReconciliationTool(
             frm,
             ["invoice", "supplier", "summary"],
@@ -94,9 +97,9 @@ frappe.ui.form.on(DOCTYPE, {
     async company(frm) {
         render_empty_state(frm);
         if (!frm.doc.company) return;
-        const options = await india_compliance.set_gstin_options(frm, true);
+        const options = await india_compliance.set_gstin_options(frm, true, true);
 
-        if (!frm.doc.company_gstin) frm.set_value("company_gstin", options[0]);
+        frm.set_value("company_gstin", options[0]);
     },
 
     async company_gstin(frm) {
@@ -813,7 +816,7 @@ class DetailViewDialog extends reconciliation.detail_view_dialog {
                 this.frm,
                 this.data.purchase_invoice_name,
                 this.data.inward_supply_name,
-                this.dialog.get_value("doctype"),
+                this.data.purchase_doctype,
                 true
             );
         } else if (action == "Create") {
@@ -1094,7 +1097,7 @@ class ImportDialog {
                 get_query: async () => {
                     let { message: gstin_list } = await frappe.call({
                         method: "india_compliance.gst_india.utils.get_gstin_list",
-                        args: { party: this.frm.doc.company },
+                        args: { party: this.frm.doc.company, exclude_isd: true },
                     });
 
                     gstin_list.unshift("All");
@@ -1408,7 +1411,25 @@ function apply_action(frm, action, selected_rows) {
                     "You can only apply <strong>Ignore</strong> action on rows where data is Missing in 2A/2B or Missing in PI. These rows will be ignored."
                 )
             );
+    } else if (action == "Pending") {
+        let warn = false;
+        affected_rows = affected_rows.filter(row => {
+            if (row.match_status == "Missing in 2A/2B") {
+                warn = true;
+                return false;
+            }
+            return true;
+        });
+
+        if (warn)
+            frappe.msgprint(
+                __(
+                    "You cannot apply <strong>Pending</strong> action on rows where data is Missing in 2A/2B. These rows will be ignored."
+                )
+            );
     }
+
+    if (!affected_rows.length) return;
 
     // update affected rows to backend and frontend
     frm._call("apply_action", { data: affected_rows, action });

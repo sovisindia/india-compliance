@@ -8,9 +8,7 @@ from india_compliance.gst_india.overrides.sales_invoice import (
     update_dashboard_with_gst_logs,
 )
 from india_compliance.gst_india.overrides.transaction import (
-    validate_hsn_codes as _validate_hsn_codes,
-)
-from india_compliance.gst_india.overrides.transaction import (
+    _validate_hsn_codes,
     validate_transaction,
 )
 from india_compliance.gst_india.utils import is_api_enabled, validate_invoice_number
@@ -18,10 +16,7 @@ from india_compliance.gst_india.utils.e_waybill import get_e_waybill_info
 
 
 def onload(doc, method=None):
-    if doc.docstatus != 1:
-        return
-
-    if doc.gst_category == "Overseas":
+    if doc.docstatus == 1 and doc.gst_category == "Overseas":
         doc.set_onload(
             "bill_of_entry_exists",
             not any(item.pending_boe_qty > 0 for item in doc.items),
@@ -37,10 +32,12 @@ def onload(doc, method=None):
 
     if (
         gst_settings.enable_e_waybill
-        and gst_settings.enable_e_waybill_from_pi
-        and doc.ewaybill
+        and (
+            gst_settings.enable_e_waybill_from_pi or gst_settings.auto_cancel_e_waybill
+        )
+        and (e_waybill_info := get_e_waybill_info(doc))
     ):
-        doc.set_onload("e_waybill_info", get_e_waybill_info(doc))
+        doc.set_onload("e_waybill_info", e_waybill_info)
 
 
 def validate(doc, method=None):
@@ -201,7 +198,7 @@ def validate_with_inward_supply(doc):
 
     if mismatch_fields:
         message = (
-            "Purchase Invoice does not match with releted GST Inward Supply.<br>"
+            "Purchase Invoice does not match with related GST Inward Supply.<br>"
             "Following values are not matching from 2A/2B: <br>"
         )
         for field, value in mismatch_fields.items():
@@ -265,6 +262,7 @@ def validate_hsn_codes(doc):
 
     _validate_hsn_codes(
         doc,
+        valid_hsn_length=[4, 6, 8],
         throw=True,
-        message="GST HSN Code is mandatory for Overseas Purchase Invoice.<br>",
+        message=_("GST HSN Code is mandatory for Overseas Purchase Invoice.<br>"),
     )

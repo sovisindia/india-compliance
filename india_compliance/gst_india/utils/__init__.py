@@ -92,19 +92,24 @@ def send_updated_doc(doc, set_docinfo=False):
 
 
 @frappe.whitelist()
-def get_gstin_list(party, party_type="Company"):
+def get_gstin_list(party: str, party_type: str = "Company", exclude_isd: bool = False):
     """
     Returns a list the party's GSTINs.
     """
     frappe.has_permission(party_type, doc=party, throw=True)
 
+    filters = {
+        "link_doctype": party_type,
+        "link_name": party,
+        "gstin": ("is", "set"),
+    }
+
+    if exclude_isd:
+        filters.update({"gst_category": ["!=", "Input Service Distributor"]})
+
     gstin_list = frappe.get_all(
         "Address",
-        filters={
-            "link_doctype": party_type,
-            "link_name": party,
-            "gstin": ("is", "set"),
-        },
+        filters=filters,
         pluck="gstin",
         distinct=True,
     )
@@ -1080,3 +1085,19 @@ def enable_autocommit(fn):
             db.auto_commit_on_many_writes = autocommit
 
     return wrapper
+
+
+def has_permission_of_page(page_name, throw=False):
+    """
+    Check if the user has permission to access the page.
+    """
+    page = frappe.get_doc("Page", page_name)
+    if not page.is_permitted():
+        if not throw:
+            return False
+
+        raise frappe.PermissionError(
+            _("You do not have permission to access page: {0}").format(page_name)
+        )
+
+    return True

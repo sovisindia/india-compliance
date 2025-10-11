@@ -5,6 +5,7 @@ import jwt
 import frappe
 from frappe import _
 from frappe.utils import (
+    add_days,
     add_to_date,
     cstr,
     flt,
@@ -15,7 +16,8 @@ from frappe.utils import (
 )
 
 from india_compliance.exceptions import GSPServerError
-from india_compliance.gst_india.api_classes.e_invoice import EInvoiceAPI
+from india_compliance.gst_india.api_classes.nic.e_invoice import EInvoiceAPI
+from india_compliance.gst_india.api_classes.taxpayer_base import otp_handler
 from india_compliance.gst_india.api_classes.taxpayer_e_invoice import (
     EInvoiceAPI as TaxpayerEInvoiceAPI,
 )
@@ -23,7 +25,9 @@ from india_compliance.gst_india.constants import (
     CURRENCY_CODES,
     EXPORT_TYPES,
     GST_CATEGORIES,
+    GSTIN_FORMAT,
     PORT_CODES,
+    TAXABLE_GST_TREATMENTS,
 )
 from india_compliance.gst_india.constants.e_invoice import (
     CANCEL_REASON_CODES,
@@ -115,7 +119,7 @@ def generate_e_invoices(docnames, force=False):
 
 
 @frappe.whitelist()
-def generate_e_invoice(docname, throw=True, force=False):
+def generate_e_invoice(docname, throw: bool = True, force: bool = False):
     doc = load_doc("Sales Invoice", docname, "submit")
 
     settings = frappe.get_cached_doc("GST Settings")
@@ -128,8 +132,17 @@ def generate_e_invoice(docname, throw=True, force=False):
         ):
             raise GSPServerError
 
+        if settings.e_invoice_reporting_time_limit_days and getdate() > add_to_date(
+            doc.posting_date, days=settings.e_invoice_reporting_time_limit_days
+        ):
+            frappe.throw(
+                _(
+                    "e-Invoice cannot be generated because the posting date exceeds the reporting time limit of {0} days as specified in GST Settings."
+                ).format(settings.e_invoice_reporting_time_limit_days),
+            )
+
         data = EInvoiceData(doc).get_data()
-        api = EInvoiceAPI(doc)
+        api = EInvoiceAPI.create(doc)
         result = api.generate_irn(data)
 
         # Handle Duplicate IRN
@@ -146,13 +159,30 @@ def generate_e_invoice(docname, throw=True, force=False):
 
         # Handle Invalid GSTIN Error
         if result.error_code in ("3028", "3029", "3001"):
-            gstin = data.get("BuyerDtls").get("Gstin")
+            if result.error_code == "3001":
+                gstin = data.get("BuyerDtls").get("Gstin")
+            else:
+                match = GSTIN_FORMAT.search(result.error_message)
+                if not match:
+                    frappe.throw(
+                        _("Could not identify GSTIN from error: {0}").format(
+                            result.error_message or _("Unknown error")
+                        )
+                    )
+
+                gstin = match.group()
+
             response = api.sync_gstin_info(gstin)
 
             if response.Status != "ACT":
-                frappe.throw(_("GSTIN {0} status is not Active").format(gstin))
+                frappe.throw(
+                    result.error_message, title=_("Error Generating e-Invoice")
+                )
 
             result = api.generate_irn(data)
+
+        if not result.Irn:
+            frappe.throw(_("e-Invoice generation failed"))
 
     except GSPServerError as e:
         handle_server_errors(settings, doc, "e-Invoice", e)
@@ -184,12 +214,14 @@ def generate_e_invoice(docname, throw=True, force=False):
 
 
 @frappe.whitelist()
+@otp_handler
 def handle_duplicate_irn_error(
     irn_data,
     current_gstin,
     current_invoice_amount,
     doc=None,
     docname=None,
+    taxpayer_api: bool = False,
 ):
     """
     Handle Duplicate IRN errors by fetching the IRN details and comparing with the current invoice.
@@ -205,8 +237,15 @@ def handle_duplicate_irn_error(
         current_invoice_amount = flt(current_invoice_amount)
 
     doc = doc or load_doc("Sales Invoice", docname, "submit")
-    api = EInvoiceAPI(doc)
-    response = api.get_e_invoice_by_irn(irn_data.Irn)
+
+    if taxpayer_api:
+        api = TaxpayerEInvoiceAPI(doc)
+        response = api.get_irn_details(irn_data.Irn)
+        response = frappe._dict(response.data or response.error)
+
+    else:
+        api = EInvoiceAPI.create(doc)
+        response = api.get_e_invoice_by_irn(irn_data.Irn)
 
     # Handle error 2283:
     # IRN details cannot be provided as it is generated more than 2 days ago
@@ -214,27 +253,26 @@ def handle_duplicate_irn_error(
         response.error_code == "2283"
         and api.settings.fetch_e_invoice_details_from_gst_portal
     ):
-        response = TaxpayerEInvoiceAPI(doc).get_irn_details(irn_data.Irn)
+        response.update(
+            {
+                "irn_data": irn_data,
+                "current_gstin": current_gstin,
+                "current_invoice_amount": current_invoice_amount,
+                "docname": doc.name,
+                "taxpayer_api": True,
+            }
+        )
 
-        if response.error_type == "otp_requested":
-            response.update(
-                {
-                    "irn_data": irn_data,
-                    "current_gstin": current_gstin,
-                    "current_invoice_amount": current_invoice_amount,
-                    "docname": doc.name,
-                }
-            )
-
-            return response
-
-        response = frappe._dict(response.data or response.error)
+        return response
 
     if signed_data := response.SignedInvoice:
         verify_e_invoice_details(current_gstin, current_invoice_amount, signed_data)
 
     if response.error_code:
         response = irn_data
+
+    if not response.Irn:
+        frappe.throw(_("e-Invoice generation failed"))
 
     return log_and_process_e_invoice_generation(doc, response, api.sandbox_mode)
 
@@ -349,7 +387,7 @@ def _cancel_e_invoice(doc, values):
         "Cnlrem": values.remark if values.remark else values.reason,
     }
 
-    result = EInvoiceAPI(doc).cancel_irn(data)
+    result = EInvoiceAPI.create(doc).cancel_irn(data)
 
     log_and_process_e_invoice_cancellation(
         doc, values, result, "e-Invoice cancelled successfully"
@@ -511,7 +549,7 @@ def validate_taxable_item(doc, throw=True):
 
     """
     # Check if there is at least one taxable item in the document
-    if any(item.gst_treatment in ("Taxable", "Zero-Rated") for item in doc.items):
+    if any(item.gst_treatment in TAXABLE_GST_TREATMENTS for item in doc.items):
         return True
 
     if not throw:
@@ -597,7 +635,7 @@ class EInvoiceData(GSTTransactionData):
         self.item_list = []
 
         for item_details in self.get_all_item_details():
-            if item_details.get("gst_treatment") not in ("Taxable", "Zero-Rated"):
+            if item_details.get("gst_treatment") not in TAXABLE_GST_TREATMENTS:
                 continue
 
             self.item_list.append(self.get_item_data(item_details))
@@ -753,6 +791,8 @@ class EInvoiceData(GSTTransactionData):
             self.transaction_details.grand_total < self.settings.e_waybill_threshold
             # e-waybill auto-generation is disabled by user
             or not self.settings.generate_e_waybill_with_e_invoice
+            # e-waybill is already generated
+            or self.doc.ewaybill
         ):
             return
 
@@ -769,7 +809,11 @@ class EInvoiceData(GSTTransactionData):
             self.doc.company_address, validate_gstin=True
         )
 
-        ship_to_address = self.doc.shipping_address_name
+        ship_to_address = (
+            self.doc.port_address
+            if (is_foreign_doc(self.doc) and self.doc.port_address)
+            else self.doc.shipping_address_name
+        )
 
         # Defaults
         self.shipping_address = None
@@ -974,3 +1018,34 @@ class EInvoiceData(GSTTransactionData):
             export_details["Port"] = self.doc.port_code
 
         return export_details
+
+
+#######################################################################################
+### Auto Cancel e-Invoice Functions ###################################################
+#######################################################################################
+
+
+def auto_cancel_e_invoice(doc, gst_settings=None):
+    gst_settings = gst_settings or frappe.get_cached_doc("GST Settings")
+
+    if not (
+        doc.irn and gst_settings.enable_e_invoice and gst_settings.auto_cancel_e_invoice
+    ):
+        return
+
+    generated_on = doc.get_onload().get("e_invoice_info", {}).get("acknowledged_on")
+    reason = gst_settings.reason_for_e_invoice_cancellation
+
+    if not generated_on or (add_days(generated_on, 1) < get_datetime()):
+        return
+
+    values = frappe._dict(
+        {
+            "reason": reason,
+            "remark": "",
+        }
+    )
+
+    _cancel_e_invoice(doc, values)
+
+    return True

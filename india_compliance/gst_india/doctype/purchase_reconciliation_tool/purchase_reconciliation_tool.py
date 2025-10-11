@@ -128,7 +128,7 @@ class PurchaseReconciliationTool(Document):
         date_range,
         return_type=None,
         return_period=None,
-        force=False,
+        force: bool = False,
         gst_categories=None,
     ):
         frappe.has_permission("Purchase Reconciliation Tool", "write", throw=True)
@@ -150,7 +150,7 @@ class PurchaseReconciliationTool(Document):
 
     @frappe.whitelist()
     def get_import_history(
-        self, company_gstin, return_type, date_range, for_download=True
+        self, company_gstin, return_type, date_range, for_download: bool = True
     ):
         frappe.has_permission("Purchase Reconciliation Tool", "write", throw=True)
 
@@ -255,8 +255,6 @@ class PurchaseReconciliationTool(Document):
         purchases, inward_supplies = _link_documents(
             purchase_invoice_name, inward_supply_name, link_doctype
         )
-
-        set_reconciliation_status(link_doctype, (purchase_invoice_name,), "Match Found")
 
         return self.ReconciledData.get(purchases, inward_supplies)
 
@@ -524,7 +522,7 @@ def generate_excel_attachment(data, doc):
 
 
 @frappe.whitelist()
-def download_excel_report(data, doc, is_supplier_specific=False):
+def download_excel_report(data, doc, is_supplier_specific: bool = False):
     frappe.has_permission("Purchase Reconciliation Tool", "export", throw=True)
 
     build_data = BuildExcel(doc, data, is_supplier_specific)
@@ -658,7 +656,7 @@ class AutoReconcile:
         if not is_api_enabled(self.gst_settings):
             return False
 
-        if self.settings.sandbox_mode:
+        if self.gst_settings.sandbox_mode:
             return False
 
         return self.gst_settings.enable_auto_reconciliation and self.gst_settings.get(

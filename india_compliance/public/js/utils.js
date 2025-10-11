@@ -31,6 +31,8 @@ Object.assign(india_compliance, {
 
     QUARTER: ["Jan-Mar", "Apr-Jun", "Jul-Sep", "Oct-Dec"],
 
+    HSN_BIFURCATION_FROM: frappe.datetime.str_to_obj("2025-05-01"),
+
     get_month_year_from_period(period) {
         /**
          * Returns month or quarter and year from the period
@@ -68,7 +70,7 @@ Object.assign(india_compliance, {
         return `${month}${year}`;
     },
 
-    get_gstin_query(party, party_type = "Company") {
+    get_gstin_query(party, party_type = "Company", exclude_isd = false) {
         if (!party) {
             frappe.show_alert({
                 message: __("Please select {0} to get GSTIN options", [__(party_type)]),
@@ -79,7 +81,7 @@ Object.assign(india_compliance, {
 
         return {
             query: "india_compliance.gst_india.utils.get_gstin_list",
-            params: { party, party_type },
+            params: { party, party_type, exclude_isd },
         };
     },
 
@@ -108,7 +110,7 @@ Object.assign(india_compliance, {
         return in_list(frappe.boot.sales_doctypes, doctype) ? "Customer" : "Supplier";
     },
 
-    async set_gstin_status(field, doc, force_update) {
+    async set_gstin_status(field, doc, force_update = false) {
         const gstin = field.value;
         if (!gstin || gstin.length !== 15) return field.set_description("");
 
@@ -133,7 +135,7 @@ Object.assign(india_compliance, {
         return message;
     },
 
-    async set_pan_status(field, force_update = null) {
+    async set_pan_status(field, force_update = false) {
         const pan = field.value;
         field.set_description("");
         if (!pan || pan.length !== 10) return;
@@ -504,6 +506,12 @@ Object.assign(india_compliance, {
         }
 
         return true;
+    },
+
+    is_indian_registered_company(company) {
+        if (!company) return false;
+
+        return frappe.boot.indian_registered_companies?.includes(company);
     },
 });
 

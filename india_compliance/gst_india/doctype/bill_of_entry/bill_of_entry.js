@@ -69,7 +69,7 @@ frappe.ui.form.on("Bill of Entry", {
             return;
         }
 
-        const options = await india_compliance.set_gstin_options(frm);
+        const options = await india_compliance.set_gstin_options(frm, false, true);
         frm.set_value("company_gstin", options[0]);
 
         const { message } = await frappe.db.get_value("Company", frm.doc.company, [
@@ -97,10 +97,18 @@ frappe.ui.form.on("Bill of Entry", {
             get_query() {
                 return {
                     query: "india_compliance.gst_india.doctype.bill_of_entry.bill_of_entry.fetch_pending_boe_invoices",
-                }
+                };
             },
             add_filters_group: 1,
             action: function (selections, args) {
+                if (selections.length === 0) {
+                    frappe.msgprint(
+                        __("Please select at least one Purchase Invoice"),
+                        __("No Selection")
+                    );
+                    return;
+                }
+
                 frm.call("get_items_from_purchase_invoice", {
                     purchase_invoices: selections,
                 }).then(d.dialog.hide());

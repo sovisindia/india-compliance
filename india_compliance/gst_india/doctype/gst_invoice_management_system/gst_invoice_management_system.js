@@ -29,8 +29,8 @@ frappe.ui.form.on(DOCTYPE, {
             "invoice_html"
         );
 
+        frm.doc.company = frappe.defaults.get_user_default("Company");
         frm.trigger("company");
-
         // Setup Listeners
 
         // Download Queued
@@ -54,7 +54,7 @@ frappe.ui.form.on(DOCTYPE, {
     async company(frm) {
         render_empty_state(frm);
         if (!frm.doc.company) return;
-        const options = await india_compliance.set_gstin_options(frm);
+        const options = await india_compliance.set_gstin_options(frm, false, true);
         frm.set_value("company_gstin", options[0]);
 
         set_period_options(frm);

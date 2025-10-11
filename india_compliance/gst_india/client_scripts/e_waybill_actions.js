@@ -1,5 +1,3 @@
-{% include "india_compliance/gst_india/client_scripts/e_waybill_applicability.js" %}
-
 const E_WAYBILL_CLASS = {
     "Sales Invoice": SalesInvoiceEwaybill,
     "Purchase Invoice": PurchaseInvoiceEwaybill,
@@ -293,9 +291,9 @@ function show_generate_e_waybill_dialog(frm) {
                 api_enabled && frm.doc.doctype ? __("Download JSON") : null,
             secondary_action: api_enabled
                 ? () => {
-                    d.hide();
-                    json_action(d.get_values());
-                }
+                      d.hide();
+                      json_action(d.get_values());
+                  }
                 : null,
         },
         frm
@@ -341,7 +339,11 @@ function show_generate_e_waybill_dialog(frm) {
 
 function get_generate_e_waybill_dialog(opts, frm) {
     if (!frm) frm = { doc: {} };
-    const ewaybill_defaults = get_sub_suppy_type_options(frm);
+    const is_foreign_transaction =
+        frm.doc.gst_category === "Overseas" &&
+        frm.doc.place_of_supply === "96-Other Countries";
+
+    const ewaybill_defaults = get_sub_suppy_type_options(frm, is_foreign_transaction);
 
     const fields = [
         {
@@ -478,10 +480,6 @@ function get_generate_e_waybill_dialog(opts, frm) {
         },
     ];
 
-    const is_foreign_transaction =
-        frm.doc.gst_category === "Overseas" &&
-        frm.doc.place_of_supply === "96-Other Countries";
-
     if (frm.doctype === "Sales Invoice" && is_foreign_transaction) {
         fields.splice(5, 0, {
             label: "Origin Port / Border Checkpost Address",
@@ -511,7 +509,7 @@ function get_generate_e_waybill_dialog(opts, frm) {
     return d;
 }
 
-function get_sub_suppy_type_options(frm) {
+function get_sub_suppy_type_options(frm, is_foreign_transaction) {
     let supply_type, sub_supply_type, sub_supply_desc, document_type;
 
     if (frm.doctype === "Delivery Note") {
@@ -562,7 +560,19 @@ function get_sub_suppy_type_options(frm) {
                     "Others",
                 ];
             }
+            else {
+                supply_type = "Outward";
+                sub_supply_type = ["Job Work", "SKD/CKD", "Others"];
+            }
         }
+    } else if (
+        frm.doctype === "Sales Invoice" &&
+        frm.doc.is_return === 0 &&
+        is_foreign_transaction
+    ) {
+        supply_type = "Outward";
+        sub_supply_type = ["Export"];
+        document_type = "Tax Invoice";
     } else {
         const key = `${frm.doctype}_${frm.doc.is_return || 0}`;
         const default_supply_types = {
@@ -930,7 +940,7 @@ function show_update_transporter_dialog(frm) {
                 reqd: 1,
                 default:
                     frm.doc.gst_transporter_id &&
-                        frm.doc.gst_transporter_id.length === 15
+                    frm.doc.gst_transporter_id.length === 15
                         ? frm.doc.gst_transporter_id
                         : "",
                 onchange: () => validate_gst_transporter_id(d, frm.doc),
@@ -1289,7 +1299,8 @@ async function update_gst_tranporter_id(dialog) {
 
 function validate_gst_transporter_id(dialog, doc) {
     india_compliance.validate_gst_transporter_id(
-        dialog.get_value("gst_transporter_id"), doc
+        dialog.get_value("gst_transporter_id"),
+        doc
     );
 }
 
@@ -1414,11 +1425,11 @@ function show_sandbox_mode_indicator() {
             `
             <div class="sidebar-menu ic-sandbox-mode">
                 <p><label class="indicator-pill no-indicator-dot yellow" title="${__(
-                "Your site has enabled Sandbox Mode in GST Settings."
-            )}">${__("Sandbox Mode")}</label></p>
+                    "Your site has enabled Sandbox Mode in GST Settings."
+                )}">${__("Sandbox Mode")}</label></p>
                 <p><a class="small text-muted" href="/app/gst-settings" target="_blank">${__(
-                "Sandbox Mode is enabled for GST APIs."
-            )}</a></p>
+                    "Sandbox Mode is enabled for GST APIs."
+                )}</a></p>
             </div>
             `
         );

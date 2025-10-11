@@ -63,6 +63,9 @@ def create_or_update_gstin_status(
     is_transporter_id=False,
     throw=False,
 ):
+    if frappe.flags.in_import:
+        return
+
     doctype = "GSTIN"
 
     if not response:
@@ -82,13 +85,15 @@ def create_or_update_gstin_status(
     gstin_doc.update(response)
     gstin_doc.save(ignore_permissions=True)
 
-    transaction_date = (
-        (doc.get("transaction_date") or doc.get("posting_date")) if doc else None
-    )
-    if callback:
-        callback(doc, transaction_date)
+    transaction_date = None
 
-    return doc
+    if doc:
+        transaction_date = doc.get("transaction_date") or doc.get("posting_date")
+
+    if callback:
+        callback(gstin_doc, transaction_date)
+
+    return gstin_doc
 
 
 ### GSTIN Status Validation ###
@@ -132,7 +137,7 @@ def get_and_validate_gstin_status(gstin, doc):
 
 
 @frappe.whitelist()
-def get_gstin_status(gstin, doc=None, force_update=False):
+def get_gstin_status(gstin, doc=None, force_update: bool = False):
     """
     Get GSTIN status. Responds immediately, and best suited for Frontend use.
     Permission check not required as GSTIN details are public where GSTIN is known.
@@ -143,10 +148,13 @@ def get_gstin_status(gstin, doc=None, force_update=False):
     if doc and isinstance(doc, str):
         doc = frappe.parse_json(doc)
 
+    if not doc:
+        doc = frappe._dict()
+
     transaction_date = doc.get("transaction_date") or doc.get("posting_date")
 
     if not force_update and not is_status_refresh_required(
-        gstin, transaction_date, doc.docstatus
+        gstin, transaction_date, doc.get("docstatus") or 0
     ):
         if not frappe.db.exists("GSTIN", gstin):
             return
