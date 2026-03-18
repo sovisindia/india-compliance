@@ -136,9 +136,7 @@ doc_events = {
         "before_save": "india_compliance.gst_india.overrides.transaction.update_gst_details",
         "before_submit": "india_compliance.gst_india.overrides.transaction.update_gst_details",
         "before_cancel": "india_compliance.gst_india.utils.e_waybill.before_cancel",
-        "validate": (
-            "india_compliance.gst_india.overrides.transaction.validate_transaction"
-        ),
+        "validate": "india_compliance.gst_india.overrides.delivery_note.validate",
     },
     "Email Template": {
         "after_rename": "india_compliance.gst_india.overrides.email_template.after_rename",
@@ -175,6 +173,7 @@ doc_events = {
         "before_submit": [
             "india_compliance.gst_india.overrides.transaction.update_gst_details",
         ],
+        "before_update_after_submit": "india_compliance.gst_india.overrides.purchase_invoice.before_update_after_submit",
         "before_cancel": "india_compliance.gst_india.utils.e_waybill.before_cancel",
         "after_mapping": "india_compliance.gst_india.overrides.transaction.after_mapping",
         "on_cancel": "india_compliance.gst_india.overrides.purchase_invoice.on_cancel",
@@ -493,6 +492,8 @@ fields_for_group_similar_items = [
     "cess_amount",
     "cess_non_advol_amount",
 ]
+
+require_type_annotated_api_methods = True
 
 
 # Includes in <head>

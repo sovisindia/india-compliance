@@ -116,7 +116,7 @@ CUSTOM_FIELDS = {
             "label": "Company GSTIN",
             "fieldtype": "Data",
             "insert_after": "billing_address_display",
-            "fetch_from": "company.gstin",
+            "fetch_from": "billing_address.gstin",
             "print_hide": 1,
             "read_only": 1,
             "translatable": 0,
@@ -417,16 +417,9 @@ CUSTOM_FIELDS = {
             "fieldtype": "Check",
         },
         {
-            "label": "Company Logo",
-            "fieldname": "logo_for_printing",
-            "insert_after": "show_physical_signature",
-            "fieldtype": "Attach",
-            "translatable": 0,
-        },
-        {
             "label": "Bank Details",
             "fieldname": "bank_details_for_printing",
-            "insert_after": "logo_for_printing",
+            "insert_after": "show_physical_signature",
             "fieldtype": "Table",
             "options": "Company Print Options",
         },
@@ -632,6 +625,22 @@ CUSTOM_FIELDS = {
     ],
     # Sales Shipping Fields
     ("Delivery Note", "Sales Invoice"): [
+        {
+            "fieldname": "port_address",
+            "label": "Origin Port / Border Checkpost Address Name",
+            "fieldtype": "Link",
+            "options": "Address",
+            "print_hide": 1,
+            "description": (
+                "Address of the place / port in India from where goods are being"
+                " exported <br>(for generating e-Waybill against export of goods)"
+            ),
+            "insert_after": "shipping_address",
+            "depends_on": (
+                "eval:doc.company_gstin && doc.gst_category === 'Overseas' &&"
+                " doc.place_of_supply == '96-Other Countries' && gst_settings.enable_e_waybill"
+            ),
+        },
         {
             "fieldname": "port_code",
             "label": "Port Code",
@@ -938,22 +947,6 @@ CUSTOM_FIELDS = {
     ],
     "Sales Invoice": [
         {
-            "fieldname": "port_address",
-            "label": "Origin Port / Border Checkpost Address Name",
-            "fieldtype": "Link",
-            "options": "Address",
-            "print_hide": 1,
-            "description": (
-                "Address of the place / port in India from where goods are being"
-                " exported <br>(for generating e-Waybill against export of goods)"
-            ),
-            "insert_after": "shipping_address",
-            "depends_on": (
-                "eval:doc.company_gstin && doc.gst_category === 'Overseas' &&"
-                " doc.place_of_supply == '96-Other Countries' && gst_settings.enable_e_waybill"
-            ),
-        },
-        {
             "fieldname": "invoice_copy",
             "label": "Invoice Copy",
             "length": 30,
@@ -1027,6 +1020,17 @@ CUSTOM_FIELDS = {
             ),
             "no_copy": 1,
             "read_only": 1,
+        },
+        {
+            "fieldname": "itc_claim_period",
+            "label": "ITC Claim Period",
+            "fieldtype": "Autocomplete",
+            "insert_after": "reconciliation_status",
+            "print_hide": 1,
+            "no_copy": 1,
+            "translatable": 0,
+            "description": "GSTR-3B period for claiming ITC (MMYYYY) or 'Deferred' to postpone.",
+            "allow_on_submit": 1,
         },
     ],
     "Purchase Invoice Item": [
@@ -1750,7 +1754,7 @@ e_waybill_status_field = {
     "label": "e-Waybill Status",
     "fieldtype": "Select",
     "insert_after": "ewaybill",
-    "options": "\nPending\nGenerated\nAuto-Retry\nCancelled\nNot Applicable\nManually Generated\nManually Cancelled",
+    "options": "\nPending\nGenerated\nManually Generated\nAuto-Retry\nCancelled\nManually Cancelled\nFailed\nNot Applicable",
     "print_hide": 1,
     "no_copy": 1,
     "translatable": 1,

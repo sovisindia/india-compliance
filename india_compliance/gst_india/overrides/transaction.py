@@ -55,6 +55,8 @@ DOCTYPES_WITH_GST_DETAIL = {
     "POS Invoice",
 }
 
+ALLOWED_TAX_DIFFERENCE = 1  # Allowable difference in tax amount due to rounding off
+
 
 def set_gst_breakup(doc):
     gst_breakup_html = frappe.render_template(
@@ -179,7 +181,7 @@ def validate_item_wise_tax_detail(doc):
             )
             tax_difference = abs(multiplier * tax_rate - tax_amount)
 
-            if tax_difference > 1:
+            if tax_difference > ALLOWED_TAX_DIFFERENCE:
                 correct_charge_type = (
                     "On Item Quantity" if is_cess_non_advol else "On Net Total"
                 )
@@ -240,6 +242,7 @@ def validate_mandatory_fields(doc, fields, error_message=None, throw=True):
         frappe.throw(
             error_message.format(bold(_(doc.meta.get_label(field)))),
             title=_("Missing Required Field"),
+            exc=frappe.MandatoryError,
         )
 
 
@@ -770,6 +773,8 @@ def _validate_hsn_codes(doc, valid_hsn_length, throw=False, message=None):
     rows_with_invalid_hsn = []
 
     for item in doc.items:
+        item.gst_hsn_code = (item.gst_hsn_code or "").replace(" ", "")
+
         if not (hsn_code := item.get("gst_hsn_code")):
             rows_with_missing_hsn.append(str(item.idx))
 
@@ -933,8 +938,11 @@ def update_party_details(party_details, doctype, company):
 
 
 @frappe.whitelist()
-def get_party_details_for_subcontracting(party_details, doctype, company):
+def get_party_details_for_subcontracting(
+    party_details: str | dict | frappe._dict, doctype: str, company: str
+):
     party_details = frappe.parse_json(party_details)
+    frappe.has_permission("Supplier", "read", throw=True)
 
     if doctype == "Stock Entry":
         party_address_field = (
@@ -963,9 +971,14 @@ def get_party_details_for_subcontracting(party_details, doctype, company):
     )
 
 
+# nosemgrep: frappe-semgrep-rules.rules.security.missing-argument-type-hint
 @frappe.whitelist()
 def get_gst_details(
-    party_details, doctype, company, *, update_place_of_supply: bool = False
+    party_details: str | dict | frappe._dict,
+    doctype: str,
+    company: str,
+    *,
+    update_place_of_supply: bool = False,
 ):
     """
     This function does not check for permissions since it returns insensitive data
@@ -1306,6 +1319,11 @@ class ItemGSTDetails:
             return
 
         self.get_item_defaults()
+        self.set_item_defaults()
+
+        if ignore_gst_validations(doc):
+            return
+
         self.set_tax_amount_precisions(doc.doctype)
 
         # To Deprecate
@@ -1316,6 +1334,8 @@ class ItemGSTDetails:
         else:
             self.set_item_name_wise_tax_details()
 
+        self.validate_item_gst_details()
+
     def get_item_defaults(self):
         item_defaults = frappe._dict(count=0)
 
@@ -1324,6 +1344,10 @@ class ItemGSTDetails:
             item_defaults[f"{row}_amount"] = 0
 
         self.item_defaults = item_defaults
+
+    def set_item_defaults(self):
+        for item in self.doc.get("items"):
+            item.update(self.item_defaults.copy())
 
     def set_item_name_wise_tax_details(self):
         """
@@ -1334,13 +1358,13 @@ class ItemGSTDetails:
         - Item count added to handle rounding errors
         """
 
-        tax_differences = frappe._dict(
-            {
-                tax_row.gst_tax_type: tax_row.get(self.tax_amount_field(), 0)
-                for tax_row in self.doc.taxes
-                if self.is_gst_tax_row(tax_row)
-            }
-        )
+        tax_differences = defaultdict(float)
+        for tax_row in self.doc.taxes:
+            if not self.is_gst_tax_row(tax_row):
+                continue
+            tax_type = tax_row.gst_tax_type
+            tax_differences[tax_type] += tax_row.get(self.tax_amount_field(), 0)
+
         last_item_with_tax = None
         last_item_defaults = None
 
@@ -1511,6 +1535,39 @@ class ItemGSTDetails:
 
         return response
 
+    def validate_item_gst_details(self):
+        invalid_rows = defaultdict(list)
+
+        for item in self.doc.get("items"):
+            for tax in GST_TAX_TYPES:
+                expected_amt = self.get_item_tax_amount(
+                    item, item.get(f"{tax}_rate"), tax
+                )
+
+                diff = abs(item.get(f"{tax}_amount") - expected_amt)
+
+                if diff > ALLOWED_TAX_DIFFERENCE:
+                    invalid_rows[item.idx].append(tax.upper())
+
+        if invalid_rows:
+            msg = (
+                _(
+                    "GST amounts do not match the calculated values based on tax rates for the following Item rows:<br><br>"
+                )
+                + "<ul>"
+            )
+            for idx, fields in invalid_rows.items():
+                msg += _(
+                    "<li><strong>Row #{0}</strong>: {1} amount mismatch</li>"
+                ).format(idx, ", ".join(fields))
+
+            msg += "</ul>"
+
+            frappe.throw(
+                msg,
+                title=_("Incorrect Item GST Details"),
+            )
+
     def set_tax_amount_precisions(self, doctype):
         item_doctype = frappe.get_meta(doctype).get_field("items").options
 
@@ -1604,34 +1661,24 @@ class ItemGSTTreatment:
 
     def update_gst_treatment_map(self):
         item_templates = set()
-        gst_treatments = set()
-        gst_treatment_map = {}
 
         for item in self.doc.items:
             item_templates.add(item.item_tax_template)
-            gst_treatments.add(item.gst_treatment)
 
-        if any(
-            gst_treatment in gst_treatments
-            for gst_treatment in ["Zero-Rated", "Nil-Rated"]
-        ):
-            # doc changed from overseas to local sale post
-            # taxes added after save
-            _gst_treatments = frappe.get_all(
+        self.gst_treatment_map = frappe._dict(
+            frappe.get_all(
                 "Item Tax Template",
                 filters={"name": ("in", item_templates)},
                 fields=["name", "gst_treatment"],
+                as_list=True,
             )
-            gst_treatment_map = {row.name: row.gst_treatment for row in _gst_treatments}
-
-        self.gst_treatment_map = gst_treatment_map
+        )
 
     def set_default_treatment(self):
         default_treatment = self.get_default_treatment()
 
         for item in self.doc.items:
-            if item.gst_treatment in ("Zero-Rated", "Nil-Rated"):
-                item.gst_treatment = self.gst_treatment_map.get(item.item_tax_template)
+            item.gst_treatment = self.gst_treatment_map.get(item.item_tax_template)
 
             if not item.gst_treatment or not item.item_tax_template:
                 item.gst_treatment = default_treatment

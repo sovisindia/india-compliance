@@ -70,6 +70,26 @@ Object.assign(india_compliance, {
         return `${month}${year}`;
     },
 
+    check_duplicate_gstin(gstin, party_type, party = null) {
+        if (!gstin || gstin.length !== 15) return;
+        this.check_duplicate_party("gstin", gstin, party_type, party);
+    },
+
+    check_duplicate_pan(pan, party_type, party = null) {
+        if (!pan || pan.length !== 10) return;
+        this.check_duplicate_party("pan", pan, party_type, party);
+    },
+
+    check_duplicate_party(field, value, party_type, party = null) {
+        if (!party_type) return;
+        if (!frappe.boot.gst_party_types.includes(party_type)) return;
+
+        frappe.call({
+            method: "india_compliance.gst_india.utils.check_duplicate_party",
+            args: { field, value, party_type, party },
+        });
+    },
+
     get_gstin_query(party, party_type = "Company", exclude_isd = false) {
         if (!party) {
             frappe.show_alert({
@@ -268,8 +288,16 @@ Object.assign(india_compliance, {
     },
 
     validate_gstin(gstin, show_msg = true) {
+        const opts = { title: __("Error"), indicator: "red" };
+
         if (!gstin || gstin.length !== 15) {
-            if (show_msg) frappe.msgprint(__("GSTIN must be 15 characters long"));
+            if (show_msg) {
+                frappe.msgprint({
+                    message: __("GSTIN must be 15 characters long"),
+                    ...opts,
+                });
+            }
+
             return;
         }
 
@@ -277,11 +305,13 @@ Object.assign(india_compliance, {
 
         if (GSTIN_REGEX.test(gstin) && is_gstin_check_digit_valid(gstin)) {
             return gstin;
-        } else {
-            if (show_msg) frappe.msgprint(__("Invalid GSTIN"));
+        } else if (show_msg) {
+            frappe.msgprint({
+                message: __("Invalid GSTIN"),
+                ...opts,
+            });
         }
     },
-
     guess_gst_category(gstin, country) {
         if (!gstin) {
             if (country && country !== "India") return "Overseas";
@@ -305,6 +335,32 @@ Object.assign(india_compliance, {
                 },
             };
         };
+    },
+
+    setup_itc_claim_period_query(frm) {
+        frm.set_query("itc_claim_period", () => ({
+            query: "india_compliance.gst_india.utils.itc_claim.get_itc_period_options",
+            params: {
+                company_gstin: frm.doc.company_gstin,
+                posting_date: frm.doc.posting_date,
+            },
+        }));
+    },
+
+    set_itc_claim_period_status(frm) {
+        frm.set_df_property("itc_claim_period", "ignore_validation", 1);
+
+        const is_filed = frm.doc.__onload?.is_itc_period_filed;
+        frm.set_df_property("itc_claim_period", "read_only", is_filed ? 1 : 0);
+        frm.set_df_property(
+            "itc_claim_period",
+            "description",
+            is_filed
+                ? __("GSTR-3B for {0} is filed", [ frm.doc.itc_claim_period ])
+                : __(
+                      "GSTR-3B period for claiming ITC (MMYYYY) or 'Deferred' to postpone."
+                  )
+        );
     },
 
     set_reconciliation_status(frm, field) {

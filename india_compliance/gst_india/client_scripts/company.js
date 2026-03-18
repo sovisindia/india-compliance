@@ -5,7 +5,7 @@ validate_gstin(DOCTYPE);
 update_gstin_in_other_documents(DOCTYPE);
 show_overseas_disabled_warning(DOCTYPE);
 set_gstin_options_and_status(DOCTYPE);
-set_pan_status(DOCTYPE)
+// set_pan_status(DOCTYPE)
 
 frappe.ui.form.off(DOCTYPE, "make_default_tax_template");
 frappe.ui.form.on(DOCTYPE, {
@@ -21,6 +21,10 @@ frappe.ui.form.on(DOCTYPE, {
         erpnext.company.set_custom_query(frm, [
             "default_customs_payable_account",
             { root_type: "Liability" },
+        ]);
+        erpnext.company.set_custom_query(frm, [
+            "default_gst_expense_account",
+            {},
         ]);
 
         frm.set_query("print_label", "bank_details_for_printing", (_, cdt, cdn) => {

@@ -22,8 +22,11 @@ from erpnext.stock.doctype.purchase_receipt.purchase_receipt import (
     update_regional_gl_entries,
 )
 
-from india_compliance.gst_india.constants import SALES_DOCTYPES
-from india_compliance.gst_india.overrides.transaction import DOCTYPES_WITH_GST_DETAIL
+from india_compliance.gst_india.constants import GST_TAX_TYPES, SALES_DOCTYPES
+from india_compliance.gst_india.overrides.transaction import (
+    DOCTYPES_WITH_GST_DETAIL,
+    ItemGSTDetails,
+)
 from india_compliance.gst_india.utils.tests import (
     _append_taxes,
     append_item,
@@ -307,6 +310,24 @@ class TestTransaction(FrappeTestCase):
             doc.submit,
         )
 
+    @change_settings("GST Settings", {"validate_hsn_code": 1, "min_hsn_digits": 8})
+    def test_invalid_hsn_digits_with_8_digit_setting(self):
+        if not self.is_sales_doctype:
+            return
+
+        doc = create_transaction(**self.transaction_details, do_not_submit=True)
+        doc.items[0].gst_hsn_code = "100000"
+        doc.save()
+        self.assertRaisesRegex(
+            frappe.exceptions.ValidationError,
+            re.compile(r"^(HSN/SAC must exist and should be 8 digits long for.*)$"),
+            doc.submit,
+        )
+
+        doc.reload()
+        doc.items[0].gst_hsn_code = "10000000"
+        doc.submit()
+
     def test_reverse_charge_transaction(self):
         if self.is_sales_doctype:
             return
@@ -458,6 +479,7 @@ class TestTransaction(FrappeTestCase):
             item.qty = 0
             item.rate = 0
             item.price_list_rate = 0
+            item.allow_zero_valuation_rate = 1
 
         # Adding charges
         doc.append(
@@ -698,6 +720,19 @@ class TestTransaction(FrappeTestCase):
         self.assertDocumentEqual(
             {"gst_treatment": "Non-GST"},
             doc.items[0],
+        )
+
+    def test_invalid_item_gst_details(self):
+        doc = create_transaction(
+            **self.transaction_details, rate=200, is_out_state=True, do_not_save=True
+        )
+        row = frappe.copy_doc(doc.taxes[0])
+        doc.append("taxes", row)
+        doc.place_of_supply = "27-Maharashtra"
+        self.assertRaisesRegex(
+            frappe.exceptions.ValidationError,
+            re.compile(r"^(.*GST amounts do not match the calculated values.*)$"),
+            doc.insert,
         )
 
     def test_rounding_gst_details(self):
@@ -979,6 +1014,47 @@ class TestTransaction(FrappeTestCase):
             re.compile(r"^(.*Tax amount should be negative for GST Account.*)$"),
             doc.save,
         )
+
+    def test_item_gst_details_for_non_gst_transactions(self):
+        """
+        Test Non-GST Transactions can be processed without errors.
+        """
+        if self.doctype not in DOCTYPES_WITH_GST_DETAIL:
+            return
+
+        doc = create_transaction(
+            **self.transaction_details,
+            is_in_state=True,
+            do_not_submit=True,
+        )
+        for item in doc.items:
+            for tax in ["cgst", "sgst"]:
+                self.assertNotEqual(item.get(f"{tax}_rate"), 0)
+                self.assertNotEqual(item.get(f"{tax}_amount"), 0)
+
+        doc.is_opening = "Yes"  # opening transaction
+        doc.save()
+
+        # validate item gst details
+        for item in doc.items:
+            for tax in GST_TAX_TYPES:
+                self.assertEqual(item.get(f"{tax}_rate"), 0)
+                self.assertEqual(item.get(f"{tax}_amount"), 0)
+
+    def test_none_taxable_values(self):
+        """
+        For Non-GST Transactions (POS Merge Log) taxable value can be none
+        """
+        doc = create_transaction(
+            **self.transaction_details,
+            is_in_state=True,
+            is_opening="Yes",
+            do_not_save=True,
+        )
+        for item in doc.items:
+            item.taxable_value = None
+
+        ItemGSTDetails().update(doc)
 
 
 def create_refund_transaction():
